@@ -36,9 +36,11 @@ typedef float f32;
 u32 render_size;
 
 
+#define DOUBLE
 #define WIDTH (1920/2)
 #define HEIGHT (1080/2)
-#define DOUBLE
+
+
 
 	// HELPER METHOD for Magic bits encoding - split by 2
 u32 morton2D_SplitBy2Bits(const u32 a) {
@@ -523,8 +525,6 @@ Olivec_Canvas vc_render(f32 dt) {
         }
 
         scale_height = ((((16/9)*(.5))/(4/3))*render_size);
-        //printf("picked render size of %i... oof\n", render_size);
-
 
         inter_buffer = malloc(sizeof(u32)*render_size*render_size);
         pitch = render_size/2;
@@ -636,14 +636,15 @@ Olivec_Canvas vc_render(f32 dt) {
         int prev_side = 0;
 
 
-        f32 prev_perp_wall_dist = 0;
+        f32 prev_perp_wall_dist = 0;// = 10000;//0;
  
         //printf("min_y: %i\n", min_y);
         while(perp_wall_dist <= max_z && prev_drawn_y > min_y) {   
             u32 idx = get_map_idx(map_x, map_y);               
             //prev_side = side;
-            prev_perp_wall_dist = perp_wall_dist;
 
+            prev_perp_wall_dist = perp_wall_dist;
+            
             perp_wall_dist = (side_dist_x < side_dist_y) ? side_dist_x : side_dist_y;
             map_x += (side_dist_x < side_dist_y) ? step_x : 0;
             map_y += (side_dist_x < side_dist_y) ? 0 : step_y;
@@ -651,31 +652,18 @@ Olivec_Canvas vc_render(f32 dt) {
             f32 side_dist_dy = (side_dist_x < side_dist_y) ? 0 : delta_dist_y;
             side_dist_x += side_dist_dx;
             side_dist_y += side_dist_dy;
-            /*
-            if (side_dist_x < side_dist_y) {
-                perp_wall_dist = side_dist_x;//(side_dist_x - delta_dist_x);
-                map_x += step_x;
-                side_dist_x += delta_dist_x;
-                //side = 0;
-            } else {
-                perp_wall_dist = side_dist_y;
-                side_dist_y += delta_dist_y;
-                map_y += step_y;
-                //side = 1;
-            }
-            */
 
-            if(prev_perp_wall_dist == 0 || perp_wall_dist == 0) { continue; }
+
+            if(perp_wall_dist == 0 || prev_perp_wall_dist == 0) {
+                continue;
+            }
             u32 depth = depthmap_u32s[idx];
             u32 abgr = cmap[idx];
 
             f32 relative_height = (height-depth);
             
-            //f32 project_wall_dist = (relative_depth > 0) ? prev_perp_wall_dist : perp_wall_dist;
-            //if(perp_wall_dist == 0) { continue; }
             f32 front_invz = scale_height / prev_perp_wall_dist;
             f32 back_invz = scale_height / perp_wall_dist;
-            //f32 invz = (1. / project_wall_dist);
             
             f32 front_float_projected_height = relative_height*front_invz;//*scale_height;
             f32 back_float_projected_height = relative_height*back_invz;//*scale_height;
@@ -688,22 +676,16 @@ Olivec_Canvas vc_render(f32 dt) {
             f32 fog_b = fog_factor*((BACKGROUND_COLOR>>16)&0xFF);
    
             f32 one_minus_fog = 1-fog_factor;
-            //f32 side_mult = 1;
-            //if(prev_side == 1) {
-            //    side_mult = 0.8;
-            //}
+
 
             f32 fr  = ((abgr&0xFF) * one_minus_fog) + fog_r;
             f32 fg = (((abgr>>8)&0xFF) * one_minus_fog) + fog_g;
             f32 fb = (((abgr>>16)&0xFF) * one_minus_fog) + fog_b;
-            //f32 fsr = fr * side_mult;
-            //f32 fsg = fr * side_mult;
-            //f32 fsb = fr * side_mult; 
+
 
             uint8_t r = (uint8_t)(fr);
             uint8_t g = (uint8_t)(fg);
             uint8_t b = (uint8_t)(fb);
-            //u32 side_abgr = (0xFF<<24)|(b<<16)|(g<<8)|r;
             abgr = (0xFF<<24)|(b<<16)|(g<<8)|r;
 
             s32 front_int_projected_height = floor(front_float_projected_height);
@@ -715,7 +697,6 @@ Olivec_Canvas vc_render(f32 dt) {
             back_heightonscreen = max(min_y, back_heightonscreen);
 
             if(front_heightonscreen < prev_drawn_y) {
-                //uint32_t* ptr = inter_buffer+(x)+(front_heightonscreen*render_size);
                 for(int y = front_heightonscreen; y < prev_drawn_y; y++) {
                     u32 bb = m2D_e_magicbits(x,y);
                 #ifdef DIRECTIONAL_LIGHTING
@@ -723,22 +704,18 @@ Olivec_Canvas vc_render(f32 dt) {
                 #else
                     inter_buffer[bb] = abgr;
                 #endif
-                    //*ptr = side_abgr;
-                    //ptr += render_size;
                 }
                 prev_drawn_y = front_heightonscreen;
             }
 
             if(back_heightonscreen < prev_drawn_y) {
-                //uint32_t* ptr = inter_buffer+(x)+(back_heightonscreen*render_size);
                 for(int y = back_heightonscreen; y < prev_drawn_y; y++) {
                     u32 bb = m2D_e_magicbits(x,y);
                     inter_buffer[bb] = abgr;
-                    //*ptr = abgr;
-                    //ptr += render_size;
                 }
                 prev_drawn_y = back_heightonscreen;
             }
+            
 
         }
 
@@ -757,6 +734,7 @@ Olivec_Canvas vc_render(f32 dt) {
 
     f32 row_y = rotate_y(roll, 0, 0);
     f32 row_x = rotate_x(roll, 0, 0);
+    
     for(int oy = 0; oy < HEIGHT; oy++) {
         f32 yy = row_y;
         f32 xx = row_x;
@@ -781,6 +759,7 @@ Olivec_Canvas vc_render(f32 dt) {
         row_x += dx_per_y;
         row_y += dy_per_y;
     }
+    
 
     f32 ms = dt*1000;
     f32 fps = 1000/ms;
@@ -789,468 +768,3 @@ Olivec_Canvas vc_render(f32 dt) {
     frame++;
     return oc;
 }
-
-/*
-Olivec_Canvas vc_render_old(f32 dt) {
-    handle_input(dt);
-    u32* cmap32 = (u32*)colormap;
-
-    if(!swizzled) {
-        swizzle_array(depthmap_u32s);
-        swizzle_array(cmap32);
-        calculate_normals();
-        swizzled = 1;
-    }
-
-    Olivec_Canvas oc = olivec_canvas(pixels, WIDTH, HEIGHT, WIDTH);
-
-    olivec_fill(oc, BACKGROUND_COLOR);
-
-    f32 sinang = sinf(ang);
-    f32 cosang = cosf(ang);
-
-    for(int i=0; i < WIDTH; i++) {
-        hiddeny[i] = HEIGHT;
-        prevpix[i] = 0;
-        prevsuby[i] = 0.0;
-        lastwasskipped[i] = 0;
-    }
-
-    f32 dz = 0.5;
-    u32 dz16_16 = 1<<16;
-
-    u32* cmap = (u32*)colormap;
-    // Draw from front to back
-    int rows = 0;
-    f32 z, invz;
-    //u32 z_16_16;
-    f32 inv_z;
-    //u32 invz_16_16;
-    //u32 ddz_16_16 = .005*65536;
-    f32 ddz = 0;//.0001;
-        
-    __m256i zero_vec = _mm256_set1_epi32(0);
-    __m256i horizon_vec = _mm256_set1_epi32(pitch);
-            
-    profile_block calc_profile; 
-
-    s64 total_fillable_pix = 0;
-    s64 total_drawn_pix = 0;
-    s64 fully_skipped_chunks = 0;
-    s64 drawn_chunks = 0;
-
-    const __m256 one_ps_vec = _mm256_set1_ps(1.0);
-    const __m256 zero_ps_vec = _mm256_set1_ps(0.0);
-    __v8si one_vec = (__v8si)_mm256_set1_epi32(1);
-
-    __m256 TwoFiftyFiveVec = _mm256_set1_ps(255.0);
-    __m256i MaskFF = _mm256_set1_epi32(0xFF);
-    __m256i OpaqueAlpha = _mm256_set1_epi32(0xFF000000);
-    __m256 HalfVec = _mm256_set1_ps(0.5);
-    f32 background_r = (BACKGROUND_COLOR&0xFF)>>1;
-    f32 background_g = ((BACKGROUND_COLOR>>8)&0xFF)>>1;
-    f32 background_b = ((BACKGROUND_COLOR>>16)&0xFF)>>1;
-    __m256 background_r_vec = _mm256_set1_ps(background_r);
-    __m256 background_g_vec = _mm256_set1_ps(background_g);
-    __m256 background_b_vec = _mm256_set1_ps(background_g);
-    f32 max_z = 800;//320.0;
-
-
-   
-    for(z=1; z < max_z; z+=dz) { //}, dz+=ddz) {
-        f32 z_to_1 = (z/max_z)*(z/max_z);
-        f32 fog_factor = lerp(0, z_to_1, 1); //(z_to_1*1-z_to_1);
-        
-        //f32 z_falloff_factor = 1/z; //lerp(1, z_to_1, 0);
-        //f32 one_minus_z_fallof = 1-z_falloff_factor;
-        //__m256 one_minus_z_falloff_vec = _mm256_set1_ps(one_minus_z_fallof);
-
-        f32 one_minus_fog = 1-fog_factor;
-        __m256 one_minus_fog_vec = _mm256_set1_ps(one_minus_fog);
-        f32 premult_fog_r = fog_factor*(BACKGROUND_COLOR&0xFF);
-        f32 premult_fog_g = fog_factor*((BACKGROUND_COLOR>>8)&0xFF);
-        f32 premult_fog_b = fog_factor*((BACKGROUND_COLOR>>16)&0xFF);
-
-        //f32 premult_light_r = z_falloff_factor * (0xFF);
-        //f32 premult_right_g = z_falloff_factor * (0xE0);
-        //f32 premult_light_b = z_falloff_factor * (0x80);
-        __m256 premult_fog_r_vec = _mm256_set1_ps(premult_fog_r);
-        __m256 premult_fog_g_vec = _mm256_set1_ps(premult_fog_g);
-        __m256 premult_fog_b_vec = _mm256_set1_ps(premult_fog_b);
-        
-        __m256 light_r_vec = _mm256_set1_ps(0xFF);
-        __m256 light_g_vec = _mm256_set1_ps(0xE0);
-        __m256 light_b_vec = _mm256_set1_ps(0x80);
-        //__m256 premult_light_r_vec = _mm256_set1_ps(premult_light_r);
-        //__m256 premult_light_g_vec = _mm256_set1_ps(premult_right_g);
-        //__m256 premult_light_b_vec = _mm256_set1_ps(premult_light_b);
-        rows++;
-
-        // 90 degree field of view
-        f32 plx = (-cosang*1.5 * z) - (sinang*1.5*z);
-        f32 ply = (sinang*1.5*z) - (cosang*1.5*z);
-        f32 prx = (cosang*1.5*z) - (sinang*1.5*z);
-        f32 pry = (-sinang*1.5 * z) - (cosang*1.5*z);
-        
-
-        f32 dx = (prx - plx) / WIDTH;
-        f32 dy = (pry - ply) / WIDTH;
-        plx += pos_x;
-        ply += pos_y;
-        
-        __v8sf plxs = (__v8sf)_mm256_set_ps(
-                                              plx+(dx*7),
-                                              plx+(dx*6),
-                                              plx+(dx*5),
-                                              plx+(dx*4),
-                                              plx+(dx*3),
-                                              plx+(dx*2),
-                                              plx+dx,
-                                              plx
-        );
-        
-
-        
-        __v8sf plys = (__v8sf)_mm256_set_ps(
-                                                    ply+(dy*7),
-                                                    ply+(dy*6),
-                                                    ply+(dy*5),
-                                                    ply+(dy*4),
-                                                    ply+(dy*3),
-                                                    ply+(dy*2),
-                                                    ply+dy,
-                                                    ply
-        );
-        
-        
-        __v8sf dx_vec = (__v8sf)_mm256_set1_ps(dx*8);
-        __v8sf dy_vec = (__v8sf)_mm256_set1_ps(dy*8);
-
-        invz = 1. / z * 240.;
-        
-        //int64_t scaled_one = 4294967296;
-        //int32_t recip = scaled_one/z_16_16;
-
-        //invz_16_16 = recip*240; // 32.0 - 16.16 -> 16.16
-
-        __v8si xs_vector = (__v8si)_mm256_set_epi32(7,6,5,4,3,2,1,0); //0,1,2,3,4,5,6,7);
-        __v8si screen_dx_vector = (__v8si)_mm256_set1_epi32(8);
-        
-        
-        __v8sf inv_z_vec = (__v8sf)_mm256_set1_ps(invz);
-
-        
-
-    
-    //TimeBlock(calc_profile, "calculate_coords_projection_and_clipping");
-
-    int iteration_count;
-    #ifdef VECTOR
-        iteration_count = WIDTH/8;
-        for(int x=continue_x; x < WIDTH; x+=8) {
-    #else
-        iteration_count = WIDTH;
-        for(int x = 0; x < WIDTH; x++) {
-    #endif
-
-
-
-            u32 depth;
-            __v8su depths;
-        #ifdef VECTOR 
-            __v8si ixs = (__v8si)_mm256_cvtps_epi32(_mm256_floor_ps(plxs));
-            __v8si iys = (__v8si)_mm256_cvtps_epi32(_mm256_floor_ps(plys));
-        #else 
-            s32 ix = floor(plx);
-            s32 iy = floor(ply);
-        #endif 
-
-        #if defined(BILINEAR_DEPTH) || defined(BILINEAR_COLOR)
-            #ifdef VECTOR
-                __m256 sub_xs = _mm256_sub_ps(plxs, _mm256_cvtepi32_ps((__m256i)depth_xs));
-                __m256 sub_ys = _mm256_sub_ps(plys, _mm256_cvtepi32_ps((__m256i)depth_ys));
-
-                __m256i idxs = get_map_idx_256(ixs, iys);
-                __m256i right_idxs = get_map_idx_256((__v8si)_mm256_add_epi32((__m256i)ixs, (__m256i)one_vec),
-                                                        iys);
-                __m256i down_idxs = get_map_idx_256(depth_xs, (__v8si)_mm256_add_epi32((__m256i)iys, (__m256i)one_vec));
-                __m256i down_right_idxs = get_map_idx_256((__v8si)_mm256_add_epi32((__m256i)ixs, (__m256i)one_vec), 
-                                                           (__v8si)_mm256_add_epi32((__m256i)iys, (__m256i)one_vec));
-            #else 
-                f32 sub_x = plx - (f32)ix;
-                f32 sub_y = ply - (f32)iy;
-                s32 idx = get_map_idx(ix, iy);
-                s32 right_idx = get_map_idx(ix+1, iy);
-                s32 down_idx = get_map_idx(ix, (iy+1));
-                s32 down_right_idx = get_map_idx(ix+1, iy+1);
-
-            #endif 
-        #else 
-            #ifdef VECTOR
-                __v8su idxs = (__v8su)get_map_idx_256(ixs, iys);
-            #else
-                s32 idx = get_map_idx(ix, iy);
-            #endif
-        #endif
-
-        #ifdef VECTOR 
-            depths = (__v8su)_mm256_i32gather_epi32( depthmap_u32s, (__m256i)idxs, 4);
-        #else
-            depth = depthmap_u32s[idx];
-        #endif
-            
-        #ifdef VECTOR 
-            __v8sf height_vec = _mm256_set1_ps(height);
-            __v8sf height_diffs = (__v8sf)_mm256_sub_ps((__m256)height_vec, _mm256_cvtepi32_ps((__m256i)depths));
-
-            __v8sf projected_heights = (__v8sf)_mm256_mul_ps((__m256)height_diffs, (__m256)inv_z_vec);
-            __v8si int_projected_heights = (__v8si)_mm256_cvtps_epi32((__m256)projected_heights);
-            __m256 proj_sub_ys = _mm256_sub_ps((__m256)projected_heights, _mm256_cvtepi32_ps((__m256i)int_projected_heights));
-            //__v8si height_diffs = (__v8si)_mm256_sub_epi32(_mm256_set1_epi32(height), (__m256i)depths);
-            //__v8si projected_heights_24_8 = (__v8si)_mm256_mullo_epi32((__m256i)height_diffs, (__m256i)shifted_inv_z_vec);
-            //__v8si projected_heights = (__v8si)_mm256_srai_epi32((__m256i)projected_heights_24_8, 8);
-            
-
-            //f32 float_projected_height = (height-depth)*invz;
-
-
-            __v8si heights_on_screen = (__v8si)_mm256_add_epi32((__m256i)int_projected_heights, (__m256i)horizon_vec);
-            heights_on_screen = (__v8si)_mm256_max_epi32((__m256i)heights_on_screen, zero_vec);
-
-
-
-            __v8si prev_ys = (__v8si)_mm256_load_si256((const __m256i*)&hiddeny[x]);
-
-
-
-            __v8si heights_minus_one = (__v8si)_mm256_sub_epi32((__m256i)heights_on_screen, (__m256i)one_vec);
-            __v8si shown_mask = (__v8si)_mm256_cmpgt_epi32((__m256i)prev_ys, (__m256i)heights_minus_one);
-
-
-            int mask = _mm256_movemask_epi8((__m256i)shown_mask);
-        #else
-            
-            //int32_t height_diff = height-depth;
-
-            //int32_t projected_height = height_diff * (invz_16_16>>8);
-            //int32_t int_projected_height = projected_height>>8;
-
-            f32 float_projected_height = (height-depth)*invz;
-   
-            s32 int_projected_height = floor(float_projected_height);
-            f32 proj_sub_y = float_projected_height - (f32)int_projected_height;
-            int heightonscreen = int_projected_height + pitch;
-            if(heightonscreen < 0) { 
-                heightonscreen = 0;
-            }
-            int prevy = hiddeny[x];
-        #endif 
-            
-
-
-        uint32_t abgr;
-        __v8su abgrs;
-
-    
-        #ifdef VECTOR 
-            abgrs = (__v8su)_mm256_i32gather_epi32(cmap,  (__m256i)idxs, 4);
-            
-            __m256 TexelR = _mm256_cvtepi32_ps(_mm256_and_si256((__m256i)abgrs, MaskFF));
-            __m256 TexelG = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32((__m256i)abgrs, 8), MaskFF));
-            __m256 TexelB = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32((__m256i)abgrs, 16), MaskFF));
-            TexelR = _mm256_add_ps(_mm256_mul_ps(TexelR, one_minus_fog_vec), premult_fog_r_vec);
-            TexelG = _mm256_add_ps(_mm256_mul_ps(TexelG, one_minus_fog_vec), premult_fog_g_vec);
-            TexelB = _mm256_add_ps(_mm256_mul_ps(TexelB, one_minus_fog_vec), premult_fog_b_vec);
-            __v8su Intr = (__v8su)_mm256_cvtps_epi32(TexelR);
-            __v8su Intg = (__v8su)_mm256_cvtps_epi32(TexelG);
-            __v8su Intb = (__v8su)_mm256_cvtps_epi32(TexelB);
-
-            __v8su Sr = Intr;
-            __v8su Sg = (__v8su)_mm256_slli_epi32((__m256i)Intg, 8);
-            __v8su Sb = (__v8su)_mm256_slli_epi32((__m256i)Intb, 16);
-            __v8su Sa = (__v8su)OpaqueAlpha;
-            abgrs = (__v8su) _mm256_or_si256(_mm256_or_si256((__m256i)Sr, (__m256i)Sg), _mm256_or_si256((__m256i)Sb, OpaqueAlpha));
-        #else
-
-            abgr = cmap[idx];
-            f32 fr  = (((f32)(abgr&0xFF)) * one_minus_fog)+premult_fog_r;
-            f32 fg = (((f32)((abgr>>8)&0xFF)) * one_minus_fog)+premult_fog_g;
-            f32 fb = (((f32)((abgr>>16)&0xFF)) * one_minus_fog)+premult_fog_b;
-            
-            uint8_t r = (uint8_t)(fr);
-            uint8_t g = (uint8_t)(fg);
-            uint8_t b = (uint8_t)(fb);
-            abgr = (0xFF<<24)|(b<<16)|(g<<8)|r;
-        #endif
-
-
-
-  
-
-            
-        #ifdef VECTOR
-
-            if(mask) {
-                
-                //s32 min_height = SDL_MAX_SINT32;
-                //s32 max_prev_y = SDL_MIN_SINT32;
-                s32 drawn_pix = 0;
-                s32 fillable_pix = 0; 
-            #if 1            
-                int x_in_tile = x&0b111;
-                int tile_x = x>>3;
-                int outer_tile_offset = tile_x*(8*HEIGHT);
-                __v8si max_int_vec = (__v8si)_mm256_set1_epi32(SDL_MAX_SINT32);
-                __v8si min_shown_heights = (__v8si)_mm256_blendv_epi8((__m256i)max_int_vec, (__m256i)heights_on_screen, (__m256i)shown_mask);
-                s32 min_height = horizontal_min_epi32(min_shown_heights);
-                int inner_tile_offset = (x_in_tile+(min_height*8));
-                __v8si min_int_vec = (__v8si)_mm256_set1_epi32(SDL_MIN_SINT32);
-                __v8si max_shown_prevy = (__v8si)_mm256_blendv_epi8((__m256i)min_int_vec, (__m256i)prev_ys, (__m256i)shown_mask);
-                s32 max_height = horizontal_max_epi32(max_shown_prevy);
-
-                uint32_t* ptr = oc.pixels+(x)+(min_height*oc.stride);
-                //uint32_t* ptr = oc.pixels + outer_tile_offset + inner_tile_offset; //.pixels+(x)+(min_height*oc.stride);
-                __v8si y_vec = (__v8si)_mm256_set1_epi32(min_height);
-                for(int y = min_height; y < max_height; y++) {
-                    __v8si within_span =(__v8si) _mm256_cmpgt_epi32((__m256i)y_vec, (__m256i)heights_minus_one);
-                    __v8si not_hidden = (__v8si)_mm256_cmpgt_epi32((__m256i)prev_ys, (__m256i)y_vec);
-                    __v8si pixels_shown = (__v8si)_mm256_and_si256((__m256i)within_span, (__m256i)not_hidden);
-                    __v8su old_abgrs = (__v8su)_mm256_load_si256((__m256i*)ptr);
-                    __v8su new_pixels = (__v8su)_mm256_blendv_epi8((__m256i)old_abgrs, (__m256i)abgrs, (__m256i)pixels_shown);
-                    _mm256_store_si256((__m256i*)ptr, (__m256i)new_pixels); //abgrs);
-                    ptr += oc.stride;
-                    //ptr += 8;
-                    y_vec = (__v8si)_mm256_add_epi32((__m256i)y_vec, (__m256i)one_vec);
-                }
-                
-            #else
-                for(int i = 0; i < 8; i++) {
-                    if(mask & (1<<(i*4))) {
-                        // got a line to draw :)
-                        min_height = min(min_height, heights_on_screen[i]);
-                        max_prev_y = max(max_prev_y, prev_ys[i]);
-                        int x_in_tile = x&0b111;
-                        int tile_x = x>>3;
-                        int outer_tile_offset = tile_x*(8*HEIGHT);
-                        int inner_tile_offset = (x_in_tile+(heights_on_screen[i]*8));
-                        uint32_t* ptr = oc.pixels+(x)+i+(heights_on_screen[i]*oc.stride);
-
-                        drawn_pix += prev_ys[i] - heights_on_screen[i];
-
-                        for(int y = heights_on_screen[i]; y < prev_ys[i]; y++) {
-
-                            *ptr = abgrs[i];
-                            //ptr++;
-                            ptr+= oc.stride;
-                            //ptr += 8;
-                        }
-                        //prevpix[x+i] = abgr;
-                        //prevsuby[x] = proj_sub_y;
-                        //lastwasskipped[x+i] = 0;
-
-                    } else {
-                        //lastwasskipped[x] = 1;
-                        //lastwasskipped[x+i] = 1;
-                    }
-                }
-            #endif
-                
-                //__v8si new_prev_ys = (__v8si )_mm256_blend_epi32((__m256i)prev_ys, (__m256i)heights_on_screen, bit_mask);
-                __m256i new_prev_ys = _mm256_blendv_epi8((__m256i)prev_ys, (__m256i)heights_on_screen, (__m256i)shown_mask);
-                _mm256_store_si256((__m256i*)&hiddeny[x], (__m256i)new_prev_ys);
-                //fillable_pix = (max_prev_y - min_height) * 8;
-                //total_drawn_pix += drawn_pix;
-                //total_fillable_pix += fillable_pix;
-                //drawn_chunks++;
-            } else {
-                //fully_skipped_chunks++;
-            }
-            
-        #else 
-            if(heightonscreen < prevy) {
-                //uint32_t *ptr = &pixels[heightonscreen*WIDTH+x];
-                int x_in_tile = x&0b111;
-                int tile_x = x>>3;
-                int outer_tile_offset = tile_x*(8*HEIGHT);
-                int inner_tile_offset = (x_in_tile+(heightonscreen*8));
-                uint32_t* ptr = oc.pixels+(x)+(heightonscreen*oc.stride);
-                //ptr = oc.pixels + outer_tile_offset + inner_tile_offset;
-                if(0) { //lastwasskipped[x]) {
-                    for(int y = heightonscreen; y < prevy; y++) {
-                        *ptr = abgr;
-                        ptr+= 8;
-                        ptr += oc.stride;
-                        //ptr++;
-                    }
-                    // blend top pixel of crest
-                    //lerp_abgr(abgr, prev )
-                    //uint8_t prev_alpha = (s32)(prevsuby[x]*255);
-                    //uint8_t rem_alpha = 255-prev_alpha;
-                    //u32 blended = blend_colors(abgr, prevpix[x], rem_alpha, prev_alpha);
-                    //*ptr = blended;//blend_abgrs(abgr, prevpix[x], prevsuby[x]);
-                } else {
-                    for(int y = heightonscreen; y < prevy; y++) {
-                        
-                        *ptr = abgr;
-                        ptr += oc.stride;
-                        //ptr++;
-                        //ptr+= 8;
-                    }                    
-
-                }
-                //prevpix[x] = abgr;
-                //prevsuby[x] = proj_sub_y;
-                hiddeny[x] = heightonscreen;
-                //lastwasskipped[x] = 0;
-            } else {
-                //occluded_pixels += heightonscreen - prevy;
-                //lastwasskipped[x] = 1;
-            }
-        #endif
-            
-            
-            //DrawVerticalLine(i, heightonscreen, hiddeny[i], map.color[mapoffset]);
-            //if (heightonscreen < hiddeny[i]) hiddeny[i] = heightonscreen;
-            plx += dx;
-            ply += dy;
-            //plx_16_16 += dx_16_16;
-            //ply_16_16 += dy_16_16;
-            plxs = (__v8sf)_mm256_add_ps((__m256)dx_vec, (__m256)plxs);
-            plys = (__v8sf)_mm256_add_ps((__m256)dy_vec, (__m256)plys);
-            xs_vector = (__v8si)_mm256_add_epi32((__m256i)xs_vector, (__m256i)screen_dx_vector);
-        }
-        //end_counted_profile_block(calc_profile, iteration_count);
-
-    }
-    //printf("first z: %f, 1/z: %f\n", 1, 240.0);
-    //printf("final z: %f, 1/z: %f\n", z, invz);
-
-    printf("rows evaluated %i\n", rows);
-    printf("horizon %f\n", pitch);
-
-    printf("height: %f\n", height);
-
-
-    
-    //if(lightang >= PI) {
-    //    lightang -= 0.01;
-    //} else {
-        lightang += 0.005;
-    //}
-    f32 ms = dt*1000;
-    f32 fps = 1000/ms;
-    total_time += ms;
-    frame++;
-    if(((frame % 100)) == 0) {
-        //bilinear = !bilinear;
-        //antialias = !antialias;
-    }
-    printf("ms: %f, fps: %f\n", ms, fps);
-    printf("bilinear: %i\n", bilinear);
-    printf("antialias: %i\n", antialias);
-    printf("lighting: %i\n", lighting);
-
-    return oc;
-}
-*/
-ProfilerEndOfCompilationUnit;
