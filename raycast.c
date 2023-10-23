@@ -31,7 +31,7 @@ typedef float f32;
 
 #define PROFILER 1
 #include "selectable_profiler.c"
-#include <SDL.h>
+#include <SDL2/SDL.h>
 
 u32 render_size;
 
@@ -664,11 +664,7 @@ Olivec_Canvas vc_render(f32 dt) {
                 //side = 1;
             }
             */
-            //if(side == 0) { 
-            //    perp_wall_dist = (side_dist_x - delta_dist_x);
-            //} else {
-            //    perp_wall_dist = (side_dist_y - delta_dist_y);
-            //}  
+
             if(prev_perp_wall_dist == 0 || perp_wall_dist == 0) { continue; }
             u32 depth = depthmap_u32s[idx];
             u32 abgr = cmap[idx];
@@ -677,12 +673,12 @@ Olivec_Canvas vc_render(f32 dt) {
             
             //f32 project_wall_dist = (relative_depth > 0) ? prev_perp_wall_dist : perp_wall_dist;
             //if(perp_wall_dist == 0) { continue; }
-            f32 front_invz = 1. / prev_perp_wall_dist;
-            f32 back_invz = 1. / perp_wall_dist;
+            f32 front_invz = scale_height / prev_perp_wall_dist;
+            f32 back_invz = scale_height / perp_wall_dist;
             //f32 invz = (1. / project_wall_dist);
             
-            f32 front_float_projected_height = relative_height*front_invz*scale_height;
-            f32 back_float_projected_height = relative_height*back_invz*scale_height;
+            f32 front_float_projected_height = relative_height*front_invz;//*scale_height;
+            f32 back_float_projected_height = relative_height*back_invz;//*scale_height;
             f32 avg_dist = (prev_perp_wall_dist+perp_wall_dist)/2;
             f32 z_to_1 = (avg_dist/max_z)*(avg_dist/max_z);
             f32 fog_factor = lerp(0, z_to_1, 1); //(z_to_1*1-z_to_1);
@@ -712,20 +708,12 @@ Olivec_Canvas vc_render(f32 dt) {
 
             s32 front_int_projected_height = floor(front_float_projected_height);
             s32 back_int_projected_height = floor(back_float_projected_height);
-            //f32 proj_sub_y = float_projected_height - (f32)int_projected_height;
             int front_heightonscreen = front_int_projected_height + pitch;
             int back_heightonscreen = back_int_projected_height + pitch;
            
-           front_heightonscreen = max(min_y, front_heightonscreen);
-            //if(front_heightonscreen < min_y) { 
-            //    front_heightonscreen = min_y;
-            //}
-
+            front_heightonscreen = max(min_y, front_heightonscreen);
             back_heightonscreen = max(min_y, back_heightonscreen);
-            //if(back_heightonscreen < min_y) { 
-            //    back_heightonscreen = min_y;
-            //}
-            // draw side
+
             if(front_heightonscreen < prev_drawn_y) {
                 //uint32_t* ptr = inter_buffer+(x)+(front_heightonscreen*render_size);
                 for(int y = front_heightonscreen; y < prev_drawn_y; y++) {
