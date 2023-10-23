@@ -65,17 +65,42 @@ static u32 get_map_idx(s32 x, s32 y) {
     // yyyyyyyy xxxxxxxx yy xx
 
     // 4x4 tiles for color
-    return m2D_e_magicbits(x & 1023, y & 1023);
+    //return m2D_e_magicbits(x & 1023, y & 1023);
+    
     //
-    //y &= 1023;
-    //x &= 1023;
-    //u32 low_y = (y & 0b11)<<2;
-    //u32 low_x = x & 0b11;
-    //u32 high_y = ((y>>2)<<12);
-    //u32 high_x = ((x>>2)<<4);
-    //return low_y | low_x | high_y | high_x;
+    y &= 1023;
+    x &= 1023;
+    u32 low_y = (y & 0b11)<<2;
+    u32 low_x = x & 0b11;
+    u32 high_y = ((y>>2)<<12);
+    u32 high_x = ((x>>2)<<4);
+    return low_y | low_x | high_y | high_x;
 
     //return (((y&1023)<<10) | (x&1023));
+}
+
+
+static __m256i get_map_idx_256(__m256i x, __m256i y) {
+
+
+    // swizzled
+    __m256i wrap_mask = _mm256_set1_epi32(1023);
+    
+    __m256i two_bit_mask = _mm256_set1_epi32(0b11);
+
+    __m256i wrapped_x = _mm256_and_si256(x, wrap_mask);
+    __m256i wrapped_y = _mm256_and_si256(y, wrap_mask);
+
+
+    //return _mm256_add_epi32(_mm256_slli_epi32((__m256i)wrapped_y, 10), (__m256i)wrapped_x);
+    // swizzled stuff here
+    __m256i low_x = _mm256_and_si256(wrapped_x, two_bit_mask);
+    __m256i low_y = _mm256_slli_epi32(_mm256_and_si256(wrapped_y, two_bit_mask), 2);
+    __m256i high_x = _mm256_slli_epi32(_mm256_srli_epi32(wrapped_x, 2), 4);
+    __m256i high_y = _mm256_slli_epi32(_mm256_srli_epi32(wrapped_y, 2), 12);
+
+    return _mm256_add_epi32(_mm256_add_epi32(low_x, low_y), _mm256_add_epi32(high_x, high_y));
+
 }
 
 f32 pos_x = 0;
@@ -219,7 +244,7 @@ void handle_input(f32 dt) {
         } else if (roll < 0) {
             roll += dt*.3;
         }
-        if(fabs(roll) <= .005) {
+        if(fabs(roll) <= dt*.3) {
             roll = 0;
         }
     }
@@ -360,28 +385,6 @@ static void calculate_normals() {
 
 
 
-static __m256i get_map_idx_256(__v8si x, __v8si y) {
-
-
-    // swizzled
-    __v8su wrap_mask = (__v8su)_mm256_set1_epi32(1023);
-    
-    __v8su two_bit_mask = (__v8su)_mm256_set1_epi32(0b11);
-
-    __v8su wrapped_x = (__v8su)_mm256_and_si256((__m256i)x, (__m256i)wrap_mask);
-    __v8su wrapped_y = (__v8su)_mm256_and_si256((__m256i)y, (__m256i)wrap_mask);
-
-
-    //return _mm256_add_epi32(_mm256_slli_epi32((__m256i)wrapped_y, 10), (__m256i)wrapped_x);
-    // swizzled stuff here
-    __v8su low_x = (__v8su)_mm256_and_si256((__m256i)wrapped_x, (__m256i)two_bit_mask);
-    __v8su low_y = (__v8su)_mm256_slli_epi32(_mm256_and_si256((__m256i)wrapped_y, (__m256i)two_bit_mask), 2);
-    __v8su high_x = (__v8su)_mm256_slli_epi32(_mm256_srli_epi32((__m256i)wrapped_x, 2), 4);
-    __v8su high_y = (__v8su)_mm256_slli_epi32(_mm256_srli_epi32((__m256i)wrapped_y, 2), 12);
-
-    return _mm256_add_epi32(_mm256_add_epi32((__m256i)low_x, (__m256i)low_y), _mm256_add_epi32((__m256i)high_x, (__m256i)high_y));
-
-}
 
 f32 total_time;
 
@@ -415,9 +418,7 @@ __m256 lerp256(__m256 a, __m256 t, __m256 b) {
                          _mm256_mul_ps(t,b));
 }
 
-//#define VECTOR
-//#define BILINEAR_DEPTH
-//#define BILINEAR_COLOR
+#define VECTOR
 
 
 uint32_t blend_colors(uint32_t c1, uint32_t c2, uint8_t a1, uint8_t a2) {
@@ -511,6 +512,35 @@ static u32* inter_buffer;//[RENDER_WIDTH*RENDER_HEIGHT]; // this needs to be lar
 
 f32 scale_height;
 
+__m256 abs_ps(__m256 x) {
+    __m256 sign_mask = _mm256_set1_ps(-0.0); // -0.f = 1 << 31
+    return _mm256_andnot_ps(sign_mask, x);
+}
+
+#define LOG2(X) ((unsigned) (8*sizeof (unsigned long long) - __builtin_clzll((X)) - 1))
+
+s32 fb_swizzle(s32 x, s32 y) {
+    
+    u32 num_bits = LOG2(render_size);
+    // we want 3 lower bits of x to be contiguous
+    u32 low_x = x & 0b111;
+    u32 high_x = x >> 3;
+
+    return (high_x<<((11)+3))|(y<<3)|low_x;
+    
+    //const int row_size = 8;
+    //const int row_size_shift = 3;
+    //const int row_mask = 0b111;
+    //s32 in_tile_x = x & row_mask;
+    //s32 out_tile_x = x>>row_size_shift;
+    //s32 in_tile_row_offset = (y*row_size)+in_tile_x;
+    //s32 out_tile_offset = out_tile_x*(render_size*row_size);
+    //return out_tile_offset+in_tile_row_offset+in_tile_x;
+}
+
+//#define VECTOR
+
+
 Olivec_Canvas vc_render(f32 dt) {
     handle_input(dt);   
 
@@ -526,7 +556,10 @@ Olivec_Canvas vc_render(f32 dt) {
 
         scale_height = ((((16/9)*(.5))/(4/3))*render_size);
 
-        inter_buffer = malloc(sizeof(u32)*render_size*render_size);
+        inter_buffer = malloc((sizeof(u32)*render_size*render_size)+16);
+        while(((intptr_t)inter_buffer)&0b1111) {
+            inter_buffer++;
+        }
         pitch = render_size/2;
         swizzle_array(depthmap_u32s);
         swizzle_array(cmap32);
@@ -551,7 +584,11 @@ Olivec_Canvas vc_render(f32 dt) {
     f32 fog_r = (BACKGROUND_COLOR&0xFF);
     f32 fog_g = ((BACKGROUND_COLOR>>8)&0xFF);
     f32 fog_b = ((BACKGROUND_COLOR>>16)&0xFF);
+    __m256 fog_r_vec = _mm256_set1_ps(fog_r);
+    __m256 fog_g_vec = _mm256_set1_ps(fog_g);
+    __m256 fog_b_vec = _mm256_set1_ps(fog_b);
     f32 max_z = 1400;
+    __m256 max_z_vec = _mm256_set1_ps(1400);
     f32 wrap_pos_x = pos_x;//fmod(pos_x, 1024);
     while(wrap_pos_x < 0) {
         wrap_pos_x += 1024;
@@ -567,6 +604,8 @@ Olivec_Canvas vc_render(f32 dt) {
     while(wrap_pos_y > 1024) {
         wrap_pos_y -= 1024;
     }
+    __m256 wrap_pos_x_vec = _mm256_set1_ps(wrap_pos_x);
+    __m256 wrap_pos_y_vec = _mm256_set1_ps(wrap_pos_y);
 
     s32 y_buffer = ((render_size-HEIGHT)/2);
     s32 x_buffer = ((render_size-WIDTH)/2);
@@ -587,138 +626,298 @@ Olivec_Canvas vc_render(f32 dt) {
     s32 min_x = min(x1, min(x2, min(x3, x4)))+x_buffer;
     s32 max_x = max(x1, max(x2, max(x3, x4)))+x_buffer;
     s32 min_y = min(y1, min(y2, min(y3, y4)))+y_buffer;
-    s32 max_y = max(y1, max(y2, max(y3, y4)))+y_buffer;
+    s32 max_y = max(y1, max(y2, max(y3, y4)))+y_buffer; 
+
+    __m256i min_y_vec = _mm256_set1_epi32(min_y);
 
 
+    //int aligned_min_x = min_x & (~0b111);
+    int aligned_min_x = min_x;
+    while(aligned_min_x & 0b111) { aligned_min_x--; }
+    __m256i xs = _mm256_setr_epi32(aligned_min_x, aligned_min_x+1, aligned_min_x+2, aligned_min_x+3, aligned_min_x+4, 
+    aligned_min_x+5, aligned_min_x+6, aligned_min_x+7);
+    __m256i dx_vector = _mm256_set1_epi32(8);
+    __m256i one_vec = _mm256_set1_epi32(1);
+    __m256i zero_vec = _mm256_set1_epi32(0);
+    __m256i negative_one_vec = _mm256_set1_epi32(-1);
+    __m256 one_ps_vec = _mm256_set1_ps(1);
+    __m256 two_ps_vec = _mm256_set1_ps(2);
+    __m256 zero_ps_vec = _mm256_set1_ps(0);
+
+    __m256 render_size_ps_vec = _mm256_set1_ps(render_size);
+
+    __m256i render_size_vec = _mm256_set1_epi32(render_size);
+
+    __m256 dir_x_vec = _mm256_set1_ps(dir_x);
+    __m256 dir_y_vec = _mm256_set1_ps(dir_y);
+    __m256 plane_x_vec = _mm256_set1_ps(plane_x);
+    __m256 plane_y_vec = _mm256_set1_ps(plane_y);
+    __m256i pitch_vec = _mm256_set1_epi32(pitch);
+
+    __m256i MaskFF_vec = _mm256_set1_epi32(0xFF);
+    __m256i OpaqueAlpha = _mm256_set1_epi32(0xFF000000);
+
+    f32 one_over_max_z = 1/max_z;
+    __m256 one_over_max_z_vec = _mm256_set1_ps(one_over_max_z);
+#ifdef VECTOR
+    for(int x = aligned_min_x; x <= max_x; x += 8) {
+#else
     for(int x = min_x; x <= max_x; x++) {
-
+#endif
         int prev_drawn_y = max_y+1;//render_size;
+        __m256i prev_drawn_ys = _mm256_set1_epi32(max_y+1);
 
-        f32 camera_space_x = 2 * x / ((f32)render_size) - 1; //x-coordinate in camera space
+        f32 camera_space_x = ((2 * x) / ((f32)render_size)) - 1; //x-coordinate in camera space
+        __m256 double_xs = _mm256_mul_ps(_mm256_set1_ps(2), _mm256_cvtepi32_ps(xs));
+        __m256 camera_space_xs = _mm256_sub_ps(_mm256_div_ps(double_xs,
+                                                             render_size_ps_vec),
+                                                one_ps_vec);
 
-        f32 ray_dir_x = dir_x + plane_x * camera_space_x;
-        f32 ray_dir_y = dir_y + plane_y * camera_space_x;
+        f32 ray_dir_x = dir_x + (plane_x * camera_space_x);
+        f32 ray_dir_y = dir_y + (plane_y * camera_space_x);
+        __m256 ray_dir_xs = _mm256_add_ps(dir_x_vec, _mm256_mul_ps(plane_x_vec, camera_space_xs));
+        __m256 ray_dir_ys = _mm256_add_ps(dir_y_vec, _mm256_mul_ps(plane_y_vec, camera_space_xs));
         //which box of the map we're in
         s32 map_x = ((s32)wrap_pos_x);
         s32 map_y = ((s32)wrap_pos_y);
+        __m256i map_xs = _mm256_set1_epi32(wrap_pos_x);
+        __m256i map_ys = _mm256_set1_epi32(wrap_pos_y);
 
-        //length of ray from current position to next x or y-side
-        f32 side_dist_x;
-        f32 side_dist_y;
+
+
 
         //length of ray from one x or y-side to next x or y-side
+        __m256 one_power_of_30_vec = _mm256_set1_ps(1e30);  
+        __m256 ray_dir_x_zeros = _mm256_cmp_ps(ray_dir_xs, zero_ps_vec, _CMP_EQ_UQ);
+        __m256 ray_dir_y_zeros = _mm256_cmp_ps(ray_dir_ys, zero_ps_vec, _CMP_EQ_UQ);
+        __m256 swapped_ray_dir_xs = _mm256_blendv_ps(ray_dir_xs, one_ps_vec, ray_dir_x_zeros);
+        __m256 swapped_ray_dir_ys = _mm256_blendv_ps(ray_dir_ys, one_ps_vec, ray_dir_y_zeros);
+        __m256 delta_dist_xs_intermediate = abs_ps(_mm256_div_ps(one_ps_vec, swapped_ray_dir_xs));
+        __m256 delta_dist_ys_intermediate = abs_ps(_mm256_div_ps(one_ps_vec, swapped_ray_dir_ys));
+        __m256 delta_dist_xs = _mm256_blendv_ps(delta_dist_xs_intermediate, one_power_of_30_vec, ray_dir_x_zeros);
+        __m256 delta_dist_ys = _mm256_blendv_ps(delta_dist_ys_intermediate, one_power_of_30_vec, ray_dir_y_zeros);
         f32 delta_dist_x = (ray_dir_x == 0) ? 1e30 : fabs(1 / ray_dir_x);
         f32 delta_dist_y = (ray_dir_y == 0) ? 1e30 : fabs(1 / ray_dir_y);
-        f32 perp_wall_dist = 0;
+
+        f32 wrap_x_minus_map_x = (wrap_pos_x - map_x);
+        f32 map_x_plus_one_minus_wrap_x = (map_x + (1.0 - wrap_pos_x));
+        f32 wrap_y_minus_map_y = (wrap_pos_y - map_y);
+        f32 map_y_plus_one_minus_wrap_y = (map_y + (1.0 - wrap_pos_y));
+        __m256 wrap_x_minus_map_x_vec = _mm256_set1_ps(wrap_x_minus_map_x);
+        __m256 map_x_plus_one_minus_wrap_x_vec = _mm256_set1_ps(map_x_plus_one_minus_wrap_x);
+        __m256 wrap_y_minus_map_y_vec = _mm256_set1_ps(wrap_y_minus_map_y);
+        __m256 map_y_plus_one_minus_wrap_y_vec = _mm256_set1_ps(map_y_plus_one_minus_wrap_y);
+
 
         //what direction to step in x or y-direction (either +1 or -1)
-        int step_x;
-        int step_y;
+        int step_x = (ray_dir_x < 0) ? -1 : 1;
+        int step_y = (ray_dir_y < 0) ? -1 : 1;
+        f32 perp_wall_dist = 0;
+        f32 prev_perp_wall_dist = 0;
 
-        if (ray_dir_x < 0) {
-            step_x = -1;
-            side_dist_x = (wrap_pos_x - map_x) * delta_dist_x;
-        } else {
-            step_x = 1;
-            side_dist_x = (map_x + 1.0 - wrap_pos_x) * delta_dist_x;
-        }
-        
-        if (ray_dir_y < 0) {
-            step_y = -1;
-            // subpixel step to grid
-            side_dist_y = (wrap_pos_y - map_y) * delta_dist_y;
-        } else {
-            step_y = 1;
-            side_dist_y = (map_y + 1.0 - wrap_pos_y) * delta_dist_y;
-        }
-
-        int side = (side_dist_x < side_dist_y) ? 0 : 1; //was a NS or a EW wall hit?
-        int prev_side = 0;
+        //length of ray from current position to next x or y-side
+        f32 side_dist_x = (ray_dir_x < 0 ? wrap_x_minus_map_x : map_x_plus_one_minus_wrap_x) * delta_dist_x;
+        f32 side_dist_y = (ray_dir_y < 0 ? wrap_y_minus_map_y : map_y_plus_one_minus_wrap_y) * delta_dist_y;
 
 
-        f32 prev_perp_wall_dist = 0;// = 10000;//0;
- 
-        //printf("min_y: %i\n", min_y);
+        __m256 ray_dir_xs_less_than_zero = _mm256_cmp_ps(ray_dir_xs, zero_ps_vec, _CMP_LT_OQ);
+        __m256 ray_dir_ys_less_than_zero = _mm256_cmp_ps(ray_dir_ys, zero_ps_vec, _CMP_LT_OQ);
+        __m256i step_xs = _mm256_blendv_epi8(one_vec, negative_one_vec, (__m256i)ray_dir_xs_less_than_zero);
+        __m256i step_ys = _mm256_blendv_epi8(one_vec, negative_one_vec, (__m256i)ray_dir_ys_less_than_zero);
+
+        __m256 side_dist_xs = _mm256_mul_ps(_mm256_blendv_ps(map_x_plus_one_minus_wrap_x_vec, wrap_x_minus_map_x_vec, ray_dir_xs_less_than_zero),
+                                            delta_dist_xs);
+        __m256 side_dist_ys = _mm256_mul_ps(_mm256_blendv_ps(map_y_plus_one_minus_wrap_y_vec, wrap_y_minus_map_y_vec, ray_dir_ys_less_than_zero), 
+                                            delta_dist_ys);
+
+        __m256 perp_wall_dists = _mm256_set1_ps(perp_wall_dist);
+        __m256 prev_perp_wall_dists = _mm256_set1_ps(prev_perp_wall_dist);
+
+    #ifdef VECTOR 
+        int dist_lte_max_z_mask = _mm256_movemask_ps(_mm256_cmp_ps(perp_wall_dists, max_z_vec, _CMP_LE_OQ));
+        int prev_draw_y_gt_min_y_mask = _mm256_movemask_epi8(_mm256_cmpgt_epi32(prev_drawn_ys, min_y_vec));
+
+        while(dist_lte_max_z_mask && prev_draw_y_gt_min_y_mask) { 
+    #else 
         while(perp_wall_dist <= max_z && prev_drawn_y > min_y) {   
-            u32 idx = get_map_idx(map_x, map_y);               
-            //prev_side = side;
+    #endif
+            u32 idx = get_map_idx(map_x, map_y);   
+            __m256i idxs = get_map_idx_256(map_xs, map_ys);            
 
             prev_perp_wall_dist = perp_wall_dist;
-            
+            prev_perp_wall_dists = perp_wall_dists;
+
+            __m256 side_dist_xs_less_than_ys = _mm256_cmp_ps(side_dist_xs, side_dist_ys, _CMP_LT_OQ);
             perp_wall_dist = (side_dist_x < side_dist_y) ? side_dist_x : side_dist_y;
-            map_x += (side_dist_x < side_dist_y) ? step_x : 0;
-            map_y += (side_dist_x < side_dist_y) ? 0 : step_y;
+            perp_wall_dists = _mm256_blendv_ps(side_dist_ys, side_dist_xs, side_dist_xs_less_than_ys);
+
+            int map_x_dx = (side_dist_x < side_dist_y) ? step_x : 0;
+            int map_y_dy = (side_dist_x < side_dist_y) ? 0 : step_y;
+            map_x += map_x_dx;
+            map_y += map_y_dy;
+
+            __m256i map_xs_dxs = _mm256_blendv_epi8(zero_vec, step_xs, (__m256i)side_dist_xs_less_than_ys);
+            __m256i map_ys_dys = _mm256_blendv_epi8(step_ys, zero_vec, (__m256i)side_dist_xs_less_than_ys);
+
+            //printf("map_x_dx %i, map_xs_dxs[7], %i\n", map_x_dx, map_xs_dxs[7]);
+            //assert(map_x_dx == map_xs_dxs[7]);
+            //assert(map_y_dy == map_ys_dys[7]);
+
+            map_xs = _mm256_add_epi32(map_xs, map_xs_dxs);
+            map_ys = _mm256_add_epi32(map_ys, map_ys_dys);
+
             f32 side_dist_dx = (side_dist_x < side_dist_y) ? delta_dist_x : 0;
             f32 side_dist_dy = (side_dist_x < side_dist_y) ? 0 : delta_dist_y;
+
+            __m256 side_dist_xs_dxs = _mm256_blendv_ps(zero_ps_vec, delta_dist_xs, side_dist_xs_less_than_ys);
+            __m256 side_dist_ys_dys = _mm256_blendv_ps(delta_dist_ys, zero_ps_vec, side_dist_xs_less_than_ys);
             side_dist_x += side_dist_dx;
             side_dist_y += side_dist_dy;
+            side_dist_xs = _mm256_add_ps(side_dist_xs, side_dist_xs_dxs);
+            side_dist_ys = _mm256_add_ps(side_dist_ys, side_dist_ys_dys);
 
+
+            __m256 prev_perp_wall_dists_zero_mask = _mm256_cmp_ps(prev_perp_wall_dists, zero_ps_vec, _CMP_EQ_UQ);
+            __m256 perp_wall_dists_zero_mask = _mm256_cmp_ps(perp_wall_dists, zero_ps_vec, _CMP_EQ_UQ);
 
             if(perp_wall_dist == 0 || prev_perp_wall_dist == 0) {
                 continue;
             }
+
             u32 depth = depthmap_u32s[idx];
+            __m256i depths = _mm256_i32gather_epi32(depthmap_u32s, idxs, 4);
             u32 abgr = cmap[idx];
+            __m256i abgrs = _mm256_i32gather_epi32(cmap, idxs, 4);
 
+            __m256 height_vec = _mm256_set1_ps(height);
             f32 relative_height = (height-depth);
+            __m256 relative_heights = _mm256_sub_ps(height_vec, _mm256_cvtepi32_ps(depths));
             
-            f32 front_invz = scale_height / prev_perp_wall_dist;
-            f32 back_invz = scale_height / perp_wall_dist;
+            __m256 scale_height_vec = _mm256_set1_ps(scale_height);
+            __m256 swapped_prev_perp_wall_dists = _mm256_blendv_ps(prev_perp_wall_dists, one_ps_vec, prev_perp_wall_dists_zero_mask);
+            __m256 swapped_perp_wall_dists = _mm256_blendv_ps(perp_wall_dists, one_ps_vec, perp_wall_dists_zero_mask);
+
+            f32 canonical_dist = (relative_height < 0 ? prev_perp_wall_dist : perp_wall_dist);
+            f32 invz = scale_height / canonical_dist;
+            __m256 canonical_dists = _mm256_blendv_ps(perp_wall_dists, prev_perp_wall_dists, _mm256_cmp_ps(relative_heights, zero_ps_vec, _CMP_LT_OQ));
+            __m256 invzs = _mm256_div_ps(scale_height_vec, canonical_dists);
             
-            f32 front_float_projected_height = relative_height*front_invz;//*scale_height;
-            f32 back_float_projected_height = relative_height*back_invz;//*scale_height;
+            f32 float_projected_height = relative_height*invz;//*scale_height;
+
+            __m256 float_projected_heights = _mm256_mul_ps(relative_heights, invzs);
+            
+        #ifdef VECTOR
+            __m256 avg_dists = _mm256_div_ps(_mm256_add_ps(prev_perp_wall_dists, perp_wall_dists), two_ps_vec);
+            __m256 z_to_1s = _mm256_mul_ps(avg_dists, one_over_max_z_vec);
+            z_to_1s = _mm256_mul_ps(z_to_1s, z_to_1s);
+            __m256 fog_factors = lerp256(zero_ps_vec, z_to_1s, one_ps_vec);
+            __m256 one_minus_fogs = _mm256_sub_ps(one_ps_vec, fog_factors);
+            __m256 mult_fog_rs = _mm256_mul_ps(fog_r_vec, fog_factors);
+            __m256 mult_fog_gs = _mm256_mul_ps(fog_g_vec, fog_factors);
+            __m256 mult_fog_bs = _mm256_mul_ps(fog_b_vec, fog_factors);
+
+            
+            __m256 rs = _mm256_cvtepi32_ps(_mm256_and_si256(abgrs, MaskFF_vec));
+            __m256 gs = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(abgrs, 8), MaskFF_vec));
+            __m256 bs = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(abgrs, 16), MaskFF_vec));
+
+            rs =  _mm256_add_ps(_mm256_mul_ps(rs, one_minus_fogs), mult_fog_rs);
+            gs =  _mm256_add_ps(_mm256_mul_ps(gs, one_minus_fogs), mult_fog_gs);
+            bs =  _mm256_add_ps(_mm256_mul_ps(bs, one_minus_fogs), mult_fog_bs);
+
+            __v8su Intr = (__v8su)_mm256_cvtps_epi32(rs);
+            __v8su Intg = (__v8su)_mm256_cvtps_epi32(gs);
+            __v8su Intb = (__v8su)_mm256_cvtps_epi32(bs);
+
+            __v8su Sr = Intr;
+            __v8su Sg = (__v8su)_mm256_slli_epi32((__m256i)Intg, 8);
+            __v8su Sb = (__v8su)_mm256_slli_epi32((__m256i)Intb, 16);
+            __v8su Sa = (__v8su)OpaqueAlpha;
+            abgrs = _mm256_or_si256(_mm256_or_si256((__m256i)Sr, (__m256i)Sg), _mm256_or_si256((__m256i)Sb, OpaqueAlpha));
+        #else
+
             f32 avg_dist = (prev_perp_wall_dist+perp_wall_dist)/2;
-            f32 z_to_1 = (avg_dist/max_z)*(avg_dist/max_z);
-            f32 fog_factor = lerp(0, z_to_1, 1); //(z_to_1*1-z_to_1);
-            
-            f32 fog_r = fog_factor*(BACKGROUND_COLOR&0xFF);
-            f32 fog_g = fog_factor*((BACKGROUND_COLOR>>8)&0xFF);
-            f32 fog_b = fog_factor*((BACKGROUND_COLOR>>16)&0xFF);
-   
+            f32 z_to_1 = (avg_dist*one_over_max_z)*(avg_dist*one_over_max_z);
+
+            f32 fog_factor = lerp(0, z_to_1, 1);
             f32 one_minus_fog = 1-fog_factor;
-
-
-            f32 fr  = ((abgr&0xFF) * one_minus_fog) + fog_r;
-            f32 fg = (((abgr>>8)&0xFF) * one_minus_fog) + fog_g;
-            f32 fb = (((abgr>>16)&0xFF) * one_minus_fog) + fog_b;
-
+            
+            f32 mult_fog_r = fog_factor*fog_r;
+            f32 mult_fog_g = fog_factor*fog_g;
+            f32 mult_fog_b = fog_factor*fog_b;           
+            f32 fr  = ((abgr&0xFF) * one_minus_fog) + mult_fog_r;
+            f32 fg = (((abgr>>8)&0xFF) * one_minus_fog) + mult_fog_g;
+            f32 fb = (((abgr>>16)&0xFF) * one_minus_fog) + mult_fog_b;
 
             uint8_t r = (uint8_t)(fr);
             uint8_t g = (uint8_t)(fg);
             uint8_t b = (uint8_t)(fb);
             abgr = (0xFF<<24)|(b<<16)|(g<<8)|r;
 
-            s32 front_int_projected_height = floor(front_float_projected_height);
-            s32 back_int_projected_height = floor(back_float_projected_height);
-            int front_heightonscreen = front_int_projected_height + pitch;
-            int back_heightonscreen = back_int_projected_height + pitch;
-           
-            front_heightonscreen = max(min_y, front_heightonscreen);
-            back_heightonscreen = max(min_y, back_heightonscreen);
 
-            if(front_heightonscreen < prev_drawn_y) {
-                for(int y = front_heightonscreen; y < prev_drawn_y; y++) {
-                    u32 bb = m2D_e_magicbits(x,y);
-                #ifdef DIRECTIONAL_LIGHTING
-                    inter_buffer[bb] = side_abgr;
-                #else
-                    inter_buffer[bb] = abgr;
-                #endif
-                }
-                prev_drawn_y = front_heightonscreen;
-            }
+        #endif
 
-            if(back_heightonscreen < prev_drawn_y) {
-                for(int y = back_heightonscreen; y < prev_drawn_y; y++) {
-                    u32 bb = m2D_e_magicbits(x,y);
-                    inter_buffer[bb] = abgr;
-                }
-                prev_drawn_y = back_heightonscreen;
-            }
+
+
+        #ifdef VECTOR
+            __m256i int_projected_heights = _mm256_cvtps_epi32(_mm256_floor_ps(float_projected_heights));
+            __m256i heights_on_screen = _mm256_add_epi32(int_projected_heights, pitch_vec);
+            heights_on_screen = _mm256_max_epi32(min_y_vec, heights_on_screen);         
             
+            __m256i too_close_mask = _mm256_or_si256((__m256i)prev_perp_wall_dists_zero_mask, (__m256i)perp_wall_dists_zero_mask);
+            //int too_close_mask = _mm256_movemask_ps(prev_perp_wall_dists_zero_mask) | _mm256_movemask_ps(perp_wall_dists_zero_mask);
+            __m256i not_clipped_mask = _mm256_cmpgt_epi32(prev_drawn_ys, heights_on_screen);
+
+            __m256i shown_mask = _mm256_andnot_si256(too_close_mask, not_clipped_mask);
+
+            __v8si max_int_vec = (__v8si)_mm256_set1_epi32(SDL_MAX_SINT32);
+            __v8si min_shown_heights = (__v8si)_mm256_blendv_epi8((__m256i)max_int_vec, (__m256i)heights_on_screen, (__m256i)shown_mask);
+            
+            s32 min_height = horizontal_min_epi32(min_shown_heights);
+            __v8si min_int_vec = (__v8si)_mm256_set1_epi32(SDL_MIN_SINT32);
+            __v8si max_shown_prevy = (__v8si)_mm256_blendv_epi8((__m256i)min_int_vec, (__m256i)prev_drawn_ys, (__m256i)shown_mask);
+            s32 max_height = horizontal_max_epi32(max_shown_prevy);
+
+            __v8si y_vec = (__v8si)_mm256_set1_epi32(min_height);
+            __v8si heights_minus_one = (__v8si)_mm256_sub_epi32((__m256i)heights_on_screen, (__m256i)one_vec);
+            u32 fb_idx = fb_swizzle(x,min_height);
+            u32* ptr = &inter_buffer[fb_idx];
+
+            for(int y = min_height; y < max_height; y++) {
+                __v8si within_span =(__v8si) _mm256_cmpgt_epi32((__m256i)y_vec, (__m256i)heights_minus_one);
+                __v8si not_hidden = (__v8si)_mm256_cmpgt_epi32((__m256i)prev_drawn_ys, (__m256i)y_vec);
+                __v8si pixels_shown = (__v8si)_mm256_and_si256((__m256i)within_span, (__m256i)not_hidden);
+                __v8su old_abgrs = (__v8su)_mm256_load_si256((__m256i*)ptr);
+                __v8su new_pixels = (__v8su)_mm256_blendv_epi8((__m256i)old_abgrs, (__m256i)abgrs, (__m256i)pixels_shown);
+                _mm256_store_si256((__m256i*)ptr, (__m256i)new_pixels); //abgrs);
+                //ptr += oc.stride;
+                ptr += 8;
+                y_vec = (__v8si)_mm256_add_epi32((__m256i)y_vec, (__m256i)one_vec); 
+            }      
+            
+            prev_drawn_ys = _mm256_blendv_epi8(prev_drawn_ys, heights_on_screen, shown_mask);
+            dist_lte_max_z_mask = _mm256_movemask_ps(_mm256_cmp_ps(perp_wall_dists, max_z_vec, _CMP_LE_OQ));
+            prev_draw_y_gt_min_y_mask = _mm256_movemask_epi8(_mm256_cmpgt_epi32(prev_drawn_ys, min_y_vec));      
+        #else            
+            
+            s32 int_projected_height = floor(float_projected_height);
+            s32 heightonscreen = int_projected_height + pitch;
+            heightonscreen = max(min_y, heightonscreen);
+            if(heightonscreen < prev_drawn_y) { // back_heightonscreen < prev_drawn_y) {
+                u32 idx = fb_swizzle(x,heightonscreen); //back_heightonscreen);
+                //for(int y = back_heightonscreen; y < prev_drawn_y; y++) {
+                for(int y = heightonscreen; y < prev_drawn_y; y++) {
+                    //u32 idx = fb_swizzle(x,y); //y*render_size+x;//m2D_e_magicbits(x,y);
+                    inter_buffer[idx] = abgr;
+                    idx += 8;
+                }
+                prev_drawn_y = heightonscreen; //back_heightonscreen;
+            }
+        #endif
 
         }
-
+        
+        xs = _mm256_add_epi32(xs, dx_vector);
     }
 
 
@@ -745,16 +944,18 @@ Olivec_Canvas vc_render(f32 dt) {
             s32 ixx = xx+x_buffer;
             yy += dy_per_x;
             xx += dx_per_x;
-            u32 bb = m2D_e_magicbits(ixx,iyy);
+            u32 bb = fb_swizzle(ixx, iyy);
             u32 pix = inter_buffer[bb];
+
             #ifdef DOUBLE
                 oc.pixels[(oy*2)*(WIDTH*2)+(ox*2)] = pix;
                 oc.pixels[(oy*2)*(WIDTH*2)+(ox*2)+1] = pix;
                 oc.pixels[((oy*2)+1)*(WIDTH*2)+(ox*2)] = pix;
                 oc.pixels[((oy*2)+1)*(WIDTH*2)+(ox*2)+1] = pix;
             #else
-                oc.pixels[oy*WIDTH+ox] = pix;
+                oc.pixels[oy*WIDTH+(ox+i)] = pix;
             #endif
+            
         }
         row_x += dx_per_y;
         row_y += dy_per_y;
