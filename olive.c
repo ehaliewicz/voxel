@@ -47,6 +47,14 @@ typedef struct {
 #define OLIVEC_DEFAULT_FONT_WIDTH 6
 // TODO: allocate proper descender and acender areas for the default font
 static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAULT_FONT_WIDTH] = {
+    [' '] = {
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+    },
     ['a'] = {
         {0, 0, 0, 0, 0},
         {0, 1, 1, 0, 0},
@@ -95,7 +103,14 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
         {0, 1, 0, 0, 0},
         {0, 1, 0, 0, 0},
     },
-    ['g'] = {0},
+    ['g'] = {
+        {0, 0, 0, 0, 0},
+        {1, 1, 1, 0, 0},
+        {1, 0, 1, 0, 0},
+        {1, 1, 1, 0, 0},
+        {0, 0, 1, 0, 0},
+        {1, 1, 1, 0, 0},
+    },
     ['h'] = {
         {1, 0, 0, 0, 0},
         {1, 1, 1, 0, 0},
@@ -130,7 +145,14 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
         {0, 1, 1, 1, 0},
     },
     ['m'] = {0},
-    ['n'] = {0},
+    ['n'] = {
+        {0, 0, 0, 0, 0},
+        {1, 1, 1, 0, 0},
+        {1, 0, 0, 1, 0},
+        {1, 0, 0, 1, 0},
+        {1, 0, 0, 1, 0},
+        {1, 0, 0, 1, 0},
+    },
     ['o'] = {
         {0, 0, 0, 0, 0},
         {0, 1, 1, 0, 0},
@@ -140,8 +162,8 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
         {0, 1, 1, 0, 0},
     },
     ['p'] = {
+        {0, 0, 0, 0, 0},
         {1, 1, 1, 0, 0},
-        {1, 0, 0, 1, 0},
         {1, 0, 0, 1, 0},
         {1, 1, 1, 0, 0},
         {1, 0, 0, 0, 0},
@@ -156,10 +178,31 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
         {1, 0, 0, 0, 0},
         {1, 0, 0, 0, 0},
     },
-    ['s'] = {0},
-    ['t'] = {0},
+    ['s'] = {
+        {0, 0, 0, 0, 0},
+        {0, 1, 1, 0, 0},
+        {1, 0, 0, 0, 0},
+        {0, 1, 0, 0, 0},
+        {0, 0, 1, 0, 0},
+        {1, 1, 0, 0, 0},
+    },
+    ['t'] = {
+        {0, 0, 0, 0, 0},
+        {0, 1, 0, 0, 0},
+        {1, 1, 1, 0, 0},
+        {0, 1, 0, 0, 0},
+        {0, 1, 0, 0, 0},
+        {0, 0, 1, 0, 0},
+    },
     ['u'] = {0},
-    ['v'] = {0},
+    ['v'] = {
+        {0, 0, 0 ,0 ,0},
+        {1, 0, 0 ,0 ,1},
+        {0, 1, 0, 1 ,0},
+        {0, 1, 0, 1 ,0},
+        {0, 1, 1, 1 ,0},
+        {0, 0, 1 ,0 ,0},
+    },
     ['w'] = {
         {0, 0, 0, 0, 0},
         {1, 0, 0, 0, 1},
@@ -169,7 +212,14 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
         {0, 1, 1, 1, 1},
     },
     ['x'] = {0},
-    ['y'] = {0},
+    ['y'] = {
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+    },
     ['z'] = {0},
 
     ['A'] = {0},
@@ -306,6 +356,15 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
         {0, 0, 0, 0, 0},
         {0, 0, 0, 0, 0},
     },
+    [':'] = {
+        {0, 0, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+        {0, 1, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+        {0, 1, 0, 0, 0},
+        {0, 0, 0, 0, 0},
+    }
+
 };
 
 static Olivec_Font olivec_default_font = {

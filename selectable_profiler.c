@@ -22,6 +22,8 @@
 #endif
 
 
+#define ArrayCount(Array) (sizeof(Array) / sizeof((Array)[0]))
+
 typedef struct {
     char const *Label;
     u64 OldTSCElapsedInclusive;
@@ -109,7 +111,8 @@ void end_counted_profile_block(profile_block blk, int count) {
 #define NameConcat2(A, B) A##B
 #define NameConcat(A, B) NameConcat2(A, B)
 #define TimeBlock(blk, Name) new_profile_block(&blk, Name, __COUNTER__ + 1);
-#define EndTimeBlock(Name) end_profile_block( NameConcat(Block, __LINE__) );
+#define EndTimeBlock(blk) end_profile_block( blk );
+#define EndCountedTimeBlock(blk, count) end_counted_profile_block(blk, count);
 #define ProfilerEndOfCompilationUnit static_assert(__COUNTER__ < ArrayCount(GlobalProfilerAnchors), "Number of profile points exceeds size of profiler::Anchors array")
 
 static void PrintTimeElapsed(u64 TotalTSCElapsed, profile_anchor *Anchor)
@@ -138,15 +141,6 @@ static void PrintAnchorData(u64 TotalCPUElapsed)
         }
     }
 }
-
-#else
-#define TimeBlock(...) do { } while(0)
-#define PrintAnchorData(...)
-#define ProfilerEndOfCompilationUnit
-
-void end_profile_block(profile_block blk) {
-}
-#endif
 
 struct profiler
 {
@@ -196,3 +190,15 @@ static void PrintBlockData(profile_block* blk) {
         printf(")\n");
     }
 }
+#else
+#define TimeBlock(...) do { } while(0)
+#define PrintAnchorData(...)
+#define ProfilerEndOfCompilationUnit
+#define EndTimeBlock(blk)
+#define EndCountedTimeBlock(blk, count)
+
+void end_profile_block(profile_block blk) {
+}
+static void EndAndPrintProfile() {
+}
+#endif

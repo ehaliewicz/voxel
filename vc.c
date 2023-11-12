@@ -67,6 +67,7 @@ static bool vc_sdl_resize_texture(SDL_Renderer *renderer, size_t new_width, size
 void handle_keydown(SDL_KeyboardEvent key);
 void handle_keyup(SDL_KeyboardEvent key);
 
+
 int main(int argc, char** argv)
 {
     int result = 0;
@@ -77,16 +78,13 @@ int main(int argc, char** argv)
     {
         if (SDL_Init(SDL_INIT_VIDEO) < 0) return_defer(1);
         
-    #ifdef DOUBLE
-        window = SDL_CreateWindow("Olivec", 40, 40, WIDTH*2, HEIGHT*2, SDL_WINDOW_RESIZABLE);
-    #else 
-        window = SDL_CreateWindow("Olivec", 40, 40, WIDTH, HEIGHT, SDL_WINDOW_RESIZABLE);
-    #endif
+        window = SDL_CreateWindow("Voxworld", 40, 40, OUTPUT_WIDTH, OUTPUT_HEIGHT, SDL_WINDOW_RESIZABLE);
         if (window == NULL) return_defer(1);
 
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);// SDL_RENDERER_ACCELERATED);
         if (renderer == NULL) return_defer(1);
 
+        //SDL_GL_SetSwapInterval(0);
         Uint32 prev = SDL_GetTicks();
         bool pause = false;
 
@@ -101,10 +99,22 @@ int main(int argc, char** argv)
 
             int mouse_x, mouse_y;
             u32 mouse_state = SDL_GetMouseState(&mouse_x, &mouse_y);
+            update_mouse_pos(mouse_x, mouse_y);
+
             if(SDL_BUTTON(1) & mouse_state) {
-                handle_mouse_click(mouse_x, mouse_y);
+                handle_mouse_click();
             } else {
                 handle_mouse_up();
+            }
+            if(SDL_BUTTON(2) & mouse_state) {
+                handle_middle_mouse();
+            } else {
+                handle_middle_mouse_up();
+            }
+            if(SDL_BUTTON(3) & mouse_state) {
+                handle_right_mouse();
+            } else {
+                handle_right_mouse_up();
             }
 
             // Flush the events
@@ -165,7 +175,7 @@ int main(int argc, char** argv)
 
             // Display the texture
             if (SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0) < 0) return_defer(1);
-            if (SDL_RenderClear(renderer) < 0) return_defer(1);
+            //if (SDL_RenderClear(renderer) < 0) return_defer(1);
             if (SDL_RenderCopy(renderer, vc_sdl_texture, &window_rect, &window_rect) < 0) return_defer(1);
             SDL_RenderPresent(renderer);
 
