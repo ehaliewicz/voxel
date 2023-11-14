@@ -118,7 +118,7 @@ void end_counted_profile_block(profile_block blk, int count) {
 static void PrintTimeElapsed(u64 TotalTSCElapsed, profile_anchor *Anchor)
 {
     f64 Percent = 100.0 * ((f64)Anchor->TSCElapsedExclusive / (f64)TotalTSCElapsed);
-    printf("  %s[%llu]: %llu (%.2f%%", Anchor->Label, Anchor->HitCount, Anchor->TSCElapsedExclusive, Percent);
+    printf("  %s[%llu]: %llu cycles (%.2f%%", Anchor->Label, Anchor->HitCount, Anchor->TSCElapsedExclusive, Percent);
     if(Anchor->TSCElapsedInclusive != Anchor->TSCElapsedExclusive)
     {
         f64 PercentWithChildren = 100.0 * ((f64)Anchor->TSCElapsedInclusive / (f64)TotalTSCElapsed);

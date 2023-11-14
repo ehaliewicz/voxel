@@ -1,40 +1,36 @@
-typedef struct {
-  int depth_idx;
-  int color_idx;
-  int water_version;
-} map_info;
 
-map_info map_table[32] = {
-  {.color_idx=1,.depth_idx=1, .water_version = 1},
-  {.color_idx=2,.depth_idx=2, .water_version = 1},
-  {.color_idx=3,.depth_idx=3},
-  {.color_idx=4,.depth_idx=4},
-  {.color_idx=5,.depth_idx=5, .water_version = 1},
-  {.color_idx=6,.depth_idx=6, .water_version = 1},
-  {.color_idx=7,.depth_idx=7, .water_version = 1},
-  {.color_idx=8,.depth_idx=6},
-  {.color_idx=9,.depth_idx=9, .water_version = 1},
-  {.color_idx=10,.depth_idx=10, .water_version = 1},
-  {.color_idx=11,.depth_idx=11, .water_version = 1},
-  {.color_idx=12,.depth_idx=11, .water_version = 1},
-  {.color_idx=13,.depth_idx=13},
-  {.color_idx=14,.depth_idx=14},
-  {.color_idx=14,.depth_idx=14, .water_version = 1},
-  {.color_idx=15,.depth_idx=15},
-  {.color_idx=16,.depth_idx=16, .water_version = 1},
-  {.color_idx=17,.depth_idx=17, .water_version = 1},
-  {.color_idx=18,.depth_idx=18, .water_version = 1},
-  {.color_idx=19,.depth_idx=19, .water_version = 1},
-  {.color_idx=20,.depth_idx=20, .water_version = 1},
-  {.color_idx=21,.depth_idx=21},
-  {.color_idx=22,.depth_idx=22, .water_version = 1},
-  {.color_idx=23,.depth_idx=21, .water_version = 1},
-  {.color_idx=24,.depth_idx=24, .water_version = 1},
-  {.color_idx=25,.depth_idx=25, .water_version = 1},
-  {.color_idx=26,.depth_idx=18, .water_version = 1},
-  {.color_idx=27,.depth_idx=15, .water_version = 1},
-  {.color_idx=28,.depth_idx=25, .water_version = 1},
-  {.color_idx=29,.depth_idx=16, .water_version = 1},
-  {.color_idx=30,.depth_idx=30, .water_version = 0},
-  {.color_idx=30,.depth_idx=30, .water_version = 0},
-};
+#ifndef MAP_TABLE_C
+#define MAP_TABLE_C
+
+#include <dirent.h> 
+#include <stdlib.h>
+
+int num_maps = 0;
+int map_name_table_size = 0;
+int map_name_table_cap = 0;
+char* map_name_table = NULL;
+int map_idxs[64];
+
+void load_map_table() {
+  if(map_name_table != NULL) { free(map_name_table); }
+  DIR *d;
+  struct dirent *dir;
+  d = opendir("./maps");
+  if (d) {
+    while ((dir = readdir(d)) != NULL && num_maps < 64) {
+      if(strstr(dir->d_name, ".vxl") == NULL) { continue; }
+      while((map_name_table_size+dir->d_namlen+1) >= map_name_table_cap) {
+        map_name_table_cap = (map_name_table_cap < 8 ? 8 : (map_name_table_cap * 1.5));
+        map_name_table = realloc(map_name_table, sizeof(char*)*map_name_table_cap);
+      }
+      map_idxs[num_maps++] = map_name_table_size;
+      strcpy(&map_name_table[map_name_table_size], dir->d_name);
+      map_name_table_size += dir->d_namlen;
+      map_name_table_size += 1;
+    }
+    closedir(d);
+  }
+  return(0);
+}
+
+#endif
