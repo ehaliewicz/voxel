@@ -20,7 +20,7 @@
 #define PI 3.14159265359
 
 #define PROFILER 0
-#define THREADING 0
+#define THREADING 1
 #include "selectable_profiler.c"
 #include <SDL2/SDL.h>
 
@@ -128,8 +128,6 @@ f32 sinf(f32 x);
 f32 cosf(f32 x);
 double asin(double x);
 
-s32 keysdown[32];
-int num_keysdown = 0;
 f32 dt;
 f32 pitch_ang = 0;
 f32 sun_ang = 0;
@@ -141,8 +139,7 @@ f32 roll = 0;//-1.57;
 f32 forwardbackward = 0;
 f32 leftright = 0;
 f32 updown = 0;
-int lookup = 0;
-int lookdown = 0;
+f32 lookupdown = 0;
 f32 rollleftright = 0;
 
 typedef enum {
@@ -201,7 +198,7 @@ int cur_map = 0;
 static int map_loaded = 0;
 
 void next_map() {
-    load_map(++cur_map);
+    load_map(cur_map++);
 }
 
 
@@ -235,10 +232,10 @@ void handle_keyup(SDL_KeyboardEvent key) {
             updown = 0;
             break;
         case SDL_SCANCODE_A:
-            lookup = 0;
+            lookupdown = 0;
             break;
         case SDL_SCANCODE_S:
-            lookdown = 0;
+            lookupdown = 0;
             break;
         case SDL_SCANCODE_L:
             lighting++;
@@ -302,10 +299,10 @@ void handle_keydown(SDL_KeyboardEvent key) {
             break;
 
         case SDL_SCANCODE_UP:
-            forwardbackward = 1.0;
+            forwardbackward = .4;
             break;
         case SDL_SCANCODE_DOWN:
-            forwardbackward = -1.0;
+            forwardbackward = -.4;
             break;
         case SDL_SCANCODE_LEFT: 
             leftright = +.7;
@@ -320,10 +317,10 @@ void handle_keydown(SDL_KeyboardEvent key) {
             updown = +1.0;
             break;
         case SDL_SCANCODE_A:
-            lookup = 1;
+            lookupdown = +1.0;
             break;
         case SDL_SCANCODE_S:
-            lookdown = 1;
+            lookupdown = -1.0;
             break;
     }
 }
@@ -369,13 +366,13 @@ void handle_input(f32 dt) {
         plane_y = old_plane_x * sin(rot_speed) + plane_y * cos(rot_speed);
     }
 
-    if(lookup) {
-        pitch_ang += dt*0.017*5;// -= dt*400;
-    }
-    if(lookdown) {
-        pitch_ang -= dt*0.017*5;
-        //pitch += dt*400;
-    }
+    //if(lookupdown) {
+        pitch_ang += dt*0.017*5 * lookupdown;// -= dt*400;
+    //}
+    //if(lookdown) {
+    //    pitch_ang -= dt*0.017*5;
+    //    //pitch += dt*400;
+    //}
 
     if(forwardbackward) {
         f32 new_pos_x = pos_x + dir_x * forwardbackward * dt * 100;
@@ -552,7 +549,7 @@ f32 pitch_ang_to_pitch(f32 pitchang) {
 
 void handle_mouse_click() {
     mouse_is_down = 1;
-    forwardbackward = 2.0;
+    forwardbackward = .8;
     s32 centerX = OUTPUT_WIDTH/2;
     s32 centerY = OUTPUT_HEIGHT/2;
     s32 dx = centerX - cur_mouse_x;
@@ -703,6 +700,9 @@ static u32 *base_world_pos_buffer = NULL;
 
 static f32* norm_buffer = NULL;
 static f32* base_norm_buffer = NULL;
+
+static u32* albedo_buffer = NULL;
+static u32* base_albedo_buffer = NULL;
 u32 num_render_size_bits; 
 
 __m256i fb_swizzle_256(__m256i xs, __m256i ys) {
@@ -734,12 +734,12 @@ s32 fb_swizzle(s32 x, s32 y) {
 }
 
 
-void set_occlusion_bit(u32 x, u32 y) {
+void set_occlusion_bit(u32 x, u32 y, u8 bit) {
     // bit logic
     u32 bit_pos_x = x & 0b111;
     u32 byte_x = x >> 3;
     u32 byte_offset = (byte_x<<num_render_size_bits)|y;
-    occlusion_buffer[byte_offset] |= (1 << bit_pos_x);
+    occlusion_buffer[byte_offset] |= (bit << bit_pos_x);
     u32 fb_idx = fb_swizzle(x, y);
     //z_buffer[fb_idx] = inv_z;
 }
@@ -905,11 +905,13 @@ void setup_internal_render_buffers() {
     base_world_pos_buffer = malloc((sizeof(u32)*render_size*render_size)+32);
     base_norm_buffer = malloc((sizeof(f32)*2*render_size*render_size)+32);
     base_occlusion_buffer = malloc((sizeof(u8)*render_size*render_size/8)+32);
+    base_albedo_buffer = malloc((sizeof(u32)*render_size*render_size)+32);
     
     inter_buffer = base_inter_buffer;
     world_pos_buffer = base_world_pos_buffer;
     norm_buffer = base_norm_buffer;
     occlusion_buffer = base_occlusion_buffer;
+    albedo_buffer = base_albedo_buffer;
 
     while(((intptr_t)inter_buffer)&0b11111) {
         inter_buffer++;
@@ -922,6 +924,10 @@ void setup_internal_render_buffers() {
     }
     while(((intptr_t)world_pos_buffer)&0b11111) {
         world_pos_buffer++;
+    }
+
+    while(((intptr_t)albedo_buffer)&0b11111) {
+        albedo_buffer++;
     }
     setup_render_size = 1;
 
@@ -1048,17 +1054,21 @@ Olivec_Canvas vc_render(f32 dt) {
         int min_x_aligned = min_x & ~0b11111;
         __m256i undrawn_vec = _mm256_set1_epi32(undrawn_world_pos);
         __m256 undrawn_norm_pt1_vec = _mm256_set1_ps(0);
+        __m256i undrawn_albedo_vec = _mm256_set1_epi32(0x00000000);
         //__m256 undrawn_norm_pt2_vec = _mm256_set1_ps(0);
         for(int x = min_x_aligned; x < max_x; x += 8) {
             u32 base_fb_idx = fb_swizzle(x, min_y);
             u32* world_pos_buf_ptr = &world_pos_buffer[base_fb_idx];
             f32* norm_ptr = &norm_buffer[base_fb_idx*2];
+            u32* albedo_ptr = &albedo_buffer[base_fb_idx];
 
             profile_block coverage_fill_empty_entries;
             TimeBlock(coverage_fill_empty_entries, "fill framebuffer");
             for(int y = min_y; y <= max_y; y++) {     
                 _mm256_store_si256((__m256i*)world_pos_buf_ptr, undrawn_vec);
                 world_pos_buf_ptr += 8;
+                _mm256_store_si256((__m256i*)albedo_ptr, undrawn_albedo_vec);
+                albedo_ptr += 8;
                 _mm256_store_ps((f32*)norm_ptr, undrawn_norm_pt1_vec);
                 _mm256_store_ps((f32*)(norm_ptr+8), undrawn_norm_pt1_vec);
                 norm_ptr += 16;
@@ -1142,20 +1152,43 @@ Olivec_Canvas vc_render(f32 dt) {
     //u16* color_ptr = colors.colors;
 
 
-
+    static int last_frame_middle_mouse_down = 0;
     if(middle_mouse_down) {
+        if(last_frame_middle_mouse_down == 0) {
+            
+  
+
+        #if 1
+            //s32 color_slot_in_column = get_color_slot_for_world_pos(screen_center_map_x, screen_center_map_y, world_height);
+            //*(color_ptr+color_slot_in_column) = 0xFF<<24 | (B469FF);  
+            u32 old_col = color_ptr[color_slot_in_column];
+            old_col = (0xFFBB9F78);
+            u8 old_ao_term = old_col & (0b11111100<<24);
+            u8 old_alpha_term = (old_col>>24)&0b11;
+            if(old_alpha_term == 3) {
+                u32 old_col_without_alpha = 0b00000000111111101111111011111110 & old_col;
+                old_col_without_alpha >>= 1;
+                
+                u32 new_col = old_col_without_alpha | (0b01<<24) | old_ao_term;
+                color_ptr[color_slot_in_column] = new_col;
+            }
+        #endif
+        }
+        last_frame_middle_mouse_down = 1;
+    } else {
+        last_frame_middle_mouse_down = 0;
+    }
+    if (right_mouse_down) {
         
-
-        //s32 color_slot_in_column = get_color_slot_for_world_pos(screen_center_map_x, screen_center_map_y, world_height);
-        *(color_ptr+color_slot_in_column) = 0xFFB469FF;   
-
-    } else if (right_mouse_down) {
+        *(color_ptr+color_slot_in_column) = 0xFFB469FF; 
+    #if 0
         int screen_center_map_z = world_height;//get_world_pos_for_color_slot(screen_center_map_x, screen_center_map_y, color_slot_in_column);
 
         if(voxel_is_solid(screen_center_map_x, screen_center_map_y,  screen_center_map_z)) {
             // it should be a surface
             remove_voxel_at(screen_center_map_x, screen_center_map_y, screen_center_map_z);
         }
+    #endif
 
     }
     pixel_is_undrawn:;
@@ -1428,20 +1461,21 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             __m256i color_idxs = _mm256_and_si256(world_space_poses, low_seven_bits_mask);
             __m256i undrawn = _mm256_cmpeq_epi32(undrawn_bit_mask_vec, _mm256_and_si256(undrawn_bit_mask_vec, world_space_poses));
             __m256i depths_eq_max = undrawn;
-            __m256i voxelmap_idxs = get_voxelmap_idx_256(xs, ys);
+            
+            
+            //__m256i voxelmap_idxs = get_voxelmap_idx_256(xs, ys);
 
             // each column is 128 rgbas
             // which is 512 
-            __m256i shifted_voxelmap_idxs = _mm256_slli_epi32(voxelmap_idxs, 6); // for 7 bits of color_idx
-            __m256i color_voxelmap_idxs = _mm256_add_epi32(shifted_voxelmap_idxs, color_idxs);
-            //color_voxelmap_idxs = _mm256_slli_epi32(color_voxelmap_idxs, 2);
+            //__m256i shifted_voxelmap_idxs = _mm256_slli_epi32(voxelmap_idxs, 6); // for 7 bits of color_idx
+            //__m256i color_voxelmap_idxs = _mm256_add_epi32(shifted_voxelmap_idxs, color_idxs);
 
-            __m256i albedos = _mm256_i32gather_epi32((u32*)columns_colors_data, color_voxelmap_idxs, 4);
-            albedos = _mm256_blendv_epi8(albedos, background_color_vec, undrawn);
-
+            //__m256i albedos = _mm256_i32gather_epi32((u32*)columns_colors_data, color_voxelmap_idxs, 4);
+            //albedos = _mm256_blendv_epi8(albedos, background_color_vec, undrawn);
 
 
-            //__m256i albedos = _mm256_i32gather_epi32((s32*)albedo_buffer, buf_idxs, 4);
+
+            __m256i albedos = _mm256_i32gather_epi32((s32*)albedo_buffer, buf_idxs, 4);
 
             // aaaaabbbbbgggggrrrrr
             //             rrrrr000
@@ -1525,14 +1559,14 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             } else if (view == VIEW_STANDARD) {
 
             
-                if(lighting) {
+                if(lighting == FANCY_LIGHTING) {
                     
 
-                    __m256i albedo_ao = _mm256_and_si256(_mm256_srli_epi32(albedos, 24), low_eight_bits_mask);
-                    __m256 ao_float = _mm256_div_ps(_mm256_cvtepi32_ps(albedo_ao), _mm256_set1_ps(255.0));
-                    float_rs = _mm256_mul_ps(ao_float, float_rs);
-                    float_gs = _mm256_mul_ps(ao_float, float_gs);
-                    float_bs = _mm256_mul_ps(ao_float, float_bs);
+                    //__m256i albedo_ao = _mm256_and_si256(_mm256_srli_epi32(albedos, 24), low_eight_bits_mask);
+                    //__m256 ao_float = _mm256_div_ps(_mm256_cvtepi32_ps(albedo_ao), _mm256_set1_ps(255.0));
+                    //float_rs = _mm256_mul_ps(ao_float, float_rs);
+                    //float_gs = _mm256_mul_ps(ao_float, float_gs);
+                    //float_bs = _mm256_mul_ps(ao_float, float_bs);
                 } else if (lighting == SIDE_LIGHTING) {
                     __m256 dot_lights = //_mm256_add_ps(
                                             //_mm256_mul_ps(normal_xs, sun_vec_x_vec),
@@ -1541,7 +1575,7 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
                     __m256 color_norm_scales = _mm256_min_ps(one_ps_vec, 
                                                     _mm256_add_ps(_mm256_max_ps(zero_ps_vec, 
-                                                                                _mm256_min_ps(dot_lights, one_sixteenth_ps_vec)), 
+                                                                                _mm256_min_ps(dot_lights, _mm256_set1_ps(.25))), 
                                                                   amb_light_factor_vec));
                     
                     __m256 depth_color_factor = _mm256_andnot_ps((__m256)depths_eq_max, color_norm_scales);
@@ -1841,8 +1875,8 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             }
 
             
-            f32 map_norm_pt1 = normal_pt1_data[map_idx];
-            f32 map_norm_pt2 = normal_pt2_data[map_idx];
+            //f32 map_norm_pt1 = normal_pt1_data[map_idx];
+            //f32 map_norm_pt2 = normal_pt2_data[map_idx];
 
             //f32 normal_pt1 = (lighting == SIDE_LIGHTING ? ((prev_side == X_SIDE) ? encoded_x_side_norm.x : encoded_y_side_norm.x) : map_norm_pt1);
             //f32 normal_pt2 = (lighting == SIDE_LIGHTING ? ((prev_side == X_SIDE) ? encoded_x_side_norm.y : encoded_y_side_norm.y) : map_norm_pt2);
@@ -1850,12 +1884,19 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             //f32 top_face_norm_pt2 = (lighting == SIDE_LIGHTING ? encoded_top_face_norm.y : map_norm_pt2);
             //f32 bot_face_norm_pt1 = (lighting == SIDE_LIGHTING ? encoded_bot_face_norm.x : map_norm_pt1);
             //f32 bot_face_norm_pt2 = (lighting == SIDE_LIGHTING ? encoded_bot_face_norm.y : map_norm_pt2);
-            f32 normal_pt1 = (SIDE_LIGHTING == SIDE_LIGHTING ? ((prev_side == X_SIDE) ? encoded_x_side_norm.x : encoded_y_side_norm.x) : map_norm_pt1);
-            f32 normal_pt2 = (SIDE_LIGHTING == SIDE_LIGHTING ? ((prev_side == X_SIDE) ? encoded_x_side_norm.y : encoded_y_side_norm.y) : map_norm_pt2);
-            f32 top_face_norm_pt1 = (SIDE_LIGHTING == SIDE_LIGHTING ? encoded_top_face_norm.x : map_norm_pt1);
-            f32 top_face_norm_pt2 = (SIDE_LIGHTING == SIDE_LIGHTING ? encoded_top_face_norm.y : map_norm_pt2);
-            f32 bot_face_norm_pt1 = (SIDE_LIGHTING == SIDE_LIGHTING ? encoded_bot_face_norm.x : map_norm_pt1);
-            f32 bot_face_norm_pt2 = (SIDE_LIGHTING == SIDE_LIGHTING ? encoded_bot_face_norm.y : map_norm_pt2);
+
+            f32 normal_pt1 = ((prev_side == X_SIDE) ? encoded_x_side_norm.x : encoded_y_side_norm.x);
+            f32 normal_pt2 = ((prev_side == X_SIDE) ? encoded_x_side_norm.y : encoded_y_side_norm.y);
+            f32 top_face_norm_pt1 = encoded_top_face_norm.x;
+            f32 top_face_norm_pt2 = encoded_top_face_norm.y;
+            f32 bot_face_norm_pt1 = encoded_bot_face_norm.x;
+            f32 bot_face_norm_pt2 = encoded_bot_face_norm.y;
+            //f32 normal_pt1 = (SIDE_LIGHTING == SIDE_LIGHTING ? ((prev_side == X_SIDE) ? encoded_x_side_norm.x : encoded_y_side_norm.x) : map_norm_pt1);
+            //f32 normal_pt2 = (SIDE_LIGHTING == SIDE_LIGHTING ? ((prev_side == X_SIDE) ? encoded_x_side_norm.y : encoded_y_side_norm.y) : map_norm_pt2);
+            //f32 top_face_norm_pt1 = (SIDE_LIGHTING == SIDE_LIGHTING ? encoded_top_face_norm.x : map_norm_pt1);
+            //f32 top_face_norm_pt2 = (SIDE_LIGHTING == SIDE_LIGHTING ? encoded_top_face_norm.y : map_norm_pt2);
+            //f32 bot_face_norm_pt1 = (SIDE_LIGHTING == SIDE_LIGHTING ? encoded_bot_face_norm.x : map_norm_pt1);
+            //f32 bot_face_norm_pt2 = (SIDE_LIGHTING == SIDE_LIGHTING ? encoded_bot_face_norm.y : map_norm_pt2);
 
 
 
@@ -1926,23 +1967,75 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
 // draw top or bottom face
 
+u32 mix_colors(u32 old_color, u32 new_color) {
+    //return new_color;
+    
+    u32 old_col_without_alpha = (old_color & (~((u32)0b11<<24)));
+    u32 new_col_without_alpha = (new_color & (~((u32)0b11<<24)));
+    u8 both_transparent = ((((old_color>>24)&0b11) != 3) && ((new_color>>24)&0b11) !=3);
+    
+
+    u8 new_r = (new_color>>0)&0xFF;
+    u8 new_g = (new_color>>8)&0xFF;
+    u8 new_b = (new_color>>16)&0xFF;
+    u8 new_color_coverage = (new_color>>24)&0b11;
+
+    u8 old_r = (old_color>>0)&0xFF;
+    u8 old_g = (old_color>>8)&0xFF;
+    u8 old_b = (old_color>>16)&0xFF;
+    u8 old_color_coverage = (old_color>>24)&0b11;
+
+
+    u8 mixed_color_coverage = min((new_color_coverage + old_color_coverage), 0b11);
+    u8 one_minus_old_color_coverage = (0b11-old_color_coverage); // 0 to 3?
+    f32 one_minus_old_color_coverage_f = (one_minus_old_color_coverage)/3.0;
+#if 0
+
+    __m128 new_vec_ps = _mm_set_ps(0xFF, new_b, new_g, new_r);
+    __m128 scaled_new_vec_ps = _mm_mul_ps(new_vec_ps, _mm_set1_ps(one_minus_old_color_coverage/3.0));
+    __m64 new_vec_ps_int = _mm_cvtps_pi8(scaled_new_vec_ps);
+    __m128i new_col_vec = _mm_set1_epi32(new_vec_ps_int[0]);
+    __m128i old_col_vec = _mm_set1_epi32(old_color);
+
+    __m128i summed = _mm_adds_epu8(new_col_vec, old_col_vec);
+
+    u32 abgr = _mm_extract_epi32(summed, 0) & (0x00FFFFFF);
+
+    return (both_transparent && (old_col_without_alpha == new_col_without_alpha)) ? old_color : (mixed_color_coverage<<24)|abgr;
+    //return (mixed_color_coverage<<24)|abgr;
+#else
+    u8 r = old_r + (one_minus_old_color_coverage_f*new_r);
+    u8 g = old_g + (one_minus_old_color_coverage_f*new_g);
+    u8 b = old_b + (one_minus_old_color_coverage_f*new_b);
+    
+
+    return (both_transparent && (old_col_without_alpha == new_col_without_alpha)) ? old_color : ((u32)((mixed_color_coverage<<24)|(b<<16)|(g<<8)|(r)));
+    //return ((u32)((mixed_color_coverage<<24)|(b<<16)|(g<<8)|(r)));
+#endif
+}
 
 #define DRAW_CHUNK_FACE(top, bot, face_norm_1, face_norm_2, voxel_color_idx) {              \
-    u32 color = *color_ptr;                                                                 \
     u32 fb_idx = fb_swizzle(x,top);                                                         \
+    u32 color = top_of_col_color_ptr[voxel_color_idx];                                                                 \
     for(int y = top; y < bot; y++) {                                                        \
         u8 occlusion_bit = get_occlusion_bit(x, y);                                         \
         u32 combined_world_pos = prepared_combined_world_map_pos|(voxel_color_idx);         \
         f32 old_norm_pt1 = norm_buffer[fb_idx*2];                                           \
         f32 old_norm_pt2 = norm_buffer[fb_idx*2+1];                                         \
+        u32 old_color = albedo_buffer[fb_idx];                                              \
+        u32 mixed_color = mix_colors(old_color, color);                                               \
         f32 new_norm_pt1 = occlusion_bit ? old_norm_pt1 : (face_norm_1);                    \
         f32 new_norm_pt2 = occlusion_bit ? old_norm_pt2 : (face_norm_2);                    \
         u32 old_world_pos = world_pos_buffer[fb_idx];                                       \
         u32 new_world_pos = occlusion_bit ? old_world_pos : combined_world_pos;             \
-        set_occlusion_bit(x, y);                                                            \
+        u32 new_color = (occlusion_bit ? old_color : mixed_color);                                \
+        u8 new_occlusion_bit = (occlusion_bit ? 1 : (((new_color>>24)&0b11) == 0b11) ? 1 : 0); \
+        min_coverage = min(new_occlusion_bit, min_coverage);                                \
+        set_occlusion_bit(x, y, new_occlusion_bit);                                                            \
         norm_buffer[fb_idx*2] = new_norm_pt1;                                               \
         norm_buffer[fb_idx*2+1] = new_norm_pt2;                                             \
         world_pos_buffer[fb_idx] = new_world_pos;                                           \
+        albedo_buffer[fb_idx] = new_color;                                                  \
         fb_idx += 8;                                                                        \
     }                                                                                       \
 }
@@ -1951,13 +2044,16 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 // needs voxel color interpolation
 #define DRAW_CHUNK_SIDE(top, bot, norm_pt1, norm_pt2) {                                     \
     s32 clipped_top_y = clipped_top_side_height - int_top_side_projected_height;            \
-    f32 texel_per_y = ((f32)num_voxels) / unclipped_screen_dy;                               \
-    f32 cur_voxel_color_idx = (f32)clipped_top_y * texel_per_y;                                  \
+    f32 texel_per_y = ((f32)num_voxels) / unclipped_screen_dy;                              \
+    f32 cur_voxel_color_idx = (f32)clipped_top_y * texel_per_y;                             \
     u32 fb_idx = fb_swizzle(x,top);                                                         \
     for(int y = top; y < bot; y++) {                                                        \
         u8 occlusion_bit = get_occlusion_bit(x, y);                                         \
-        u16 voxel_color_idx = cur_voxel_color_idx;                                     \
+        u16 voxel_color_idx = cur_voxel_color_idx;                                          \
+        u32 color = color_ptr[voxel_color_idx];                                             \
         u32 combined_world_pos = prepared_combined_world_map_pos|((voxel_color_idx+color_ptr)-top_of_col_color_ptr);         \
+        u32 old_color = albedo_buffer[fb_idx];                                              \
+        u32 mixed_color = mix_colors(old_color, color);                                               \
         cur_voxel_color_idx += texel_per_y;                                                 \
         f32 old_norm_pt1 = norm_buffer[fb_idx*2];                                           \
         f32 old_norm_pt2 = norm_buffer[fb_idx*2+1];                                         \
@@ -1965,10 +2061,14 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
         f32 new_norm_pt2 = occlusion_bit ? old_norm_pt2 : (norm_pt2);                       \
         u32 old_world_pos = world_pos_buffer[fb_idx];                                       \
         u32 new_world_pos = occlusion_bit ? old_world_pos : combined_world_pos;             \
-        set_occlusion_bit(x, y);                                                            \
+        u32 new_color = (occlusion_bit ? old_color : mixed_color);                                \
+        u8 new_occlusion_bit = (occlusion_bit ? 1 : (((new_color>>24)&0b11) == 0b11) ? 1 : 0); \
+        min_coverage = min(new_occlusion_bit, min_coverage);                                \
+        set_occlusion_bit(x, y, new_occlusion_bit);                                                            \
         norm_buffer[fb_idx*2] = new_norm_pt1;                                               \
         norm_buffer[fb_idx*2+1] = new_norm_pt2;                                             \
         world_pos_buffer[fb_idx] = new_world_pos;                                           \
+        albedo_buffer[fb_idx] = new_color;                                                  \
         fb_idx += 8;                                                                        \
     }                                                                                       \
 }
@@ -1996,6 +2096,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     s32 clipped_bot_heightonscreen = min(prev_drawn_max_y, bot_projected_heightonscreen);       \
     s32 unclipped_screen_dy = int_bot_side_projected_height - int_top_side_projected_height;    \
     s32 num_voxels = (chunk_top - chunk_bot);                                      \
+    u8 min_coverage = 1;                                                                \
     if(clipped_top_heightonscreen < clipped_bot_heightonscreen) {                        \
         s32 clipped_top_face_height = CLAMP(int_top_face_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
         s32 clipped_top_side_height = CLAMP(int_top_side_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
@@ -2009,11 +2110,11 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             DRAW_CHUNK_SIDE(clipped_top_side_height, clipped_bot_side_height,  side_norm_pt1, side_norm_pt2);           \
         }                                                                                \
         if(clipped_bot_side_height < clipped_bot_face_height) {                          \
-            u16 color_offset = (color_ptr - top_of_col_color_ptr)+num_voxels-1;                       \
+            u16 color_offset = ((color_ptr - top_of_col_color_ptr)+num_voxels)-1;                       \
             DRAW_CHUNK_FACE(clipped_bot_side_height, clipped_bot_face_height, bot_face_norm_pt1, bot_face_norm_pt2, color_offset); \
         }                                                                                \
-        prev_drawn_max_y = next_prev_drawn_max_y;             \
-        next_drawable_min_y = next_next_drawable_min_y;       \
+        prev_drawn_max_y = (min_coverage != 0b1 ? prev_drawn_max_y : next_prev_drawn_max_y);             \
+        next_drawable_min_y = (min_coverage != 0b1 ? next_drawable_min_y : next_next_drawable_min_y);       \
     }                                                                                    \
 }  
                                                                       
@@ -2063,9 +2164,9 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                     int bot_surface_top = 255 - span_info[run].bottom_voxels_start;
                     int bot_surface_bot = 255 - span_info[run].bottom_voxels_end;
                     color_ptr -= (span_info[run].bottom_voxels_end-span_info[run].bottom_voxels_start);
-                    //if(bot_surface_bot < bot_surface_top) {
+                    if(bot_surface_bot < bot_surface_top) {
                         DRAW_CHUNK(bot_surface_top, bot_surface_bot, 0, 1, normal_pt1, normal_pt2, bot_face_norm_pt1, bot_face_norm_pt2);
-                    //}
+                    }
                     color_ptr -= ((span_info[run].top_voxels_end-span_info[run].top_voxels_start));
                     DRAW_CHUNK(top_surface_top, top_surface_bot, 0, 1, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2);\
                 }
@@ -2082,9 +2183,9 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                     int bot_surface_top = 255 - span_info[run].bottom_voxels_start;
                     int bot_surface_bot = 255 - span_info[run].bottom_voxels_end;
                     color_ptr -= (span_info[run].bottom_voxels_end-span_info[run].bottom_voxels_start);
-                    //if(bot_surface_bot < bot_surface_top) {
+                    if(bot_surface_bot < bot_surface_top) {
                         DRAW_CHUNK(bot_surface_top, bot_surface_bot, 0, 0, normal_pt1, normal_pt2, bot_face_norm_pt1, bot_face_norm_pt2);
-                    //}
+                    }
                     color_ptr -= ((span_info[run].top_voxels_end-span_info[run].top_voxels_start));
                     DRAW_CHUNK(top_surface_top, top_surface_bot, 0, 0, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2);
 
@@ -2100,9 +2201,9 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                     DRAW_CHUNK(top_surface_top, top_surface_bot, 1, 0, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2);
                     color_ptr += (span_info[run].top_voxels_end-span_info[run].top_voxels_start);
 
-                    //if(bot_surface_bot < bot_surface_top) {
+                    if(bot_surface_bot < bot_surface_top) {
                         DRAW_CHUNK(bot_surface_top, bot_surface_bot, 1, 0, normal_pt1, normal_pt2, bot_face_norm_pt1, bot_face_norm_pt2);
-                    //}
+                    }
                     color_ptr += (span_info[run].bottom_voxels_end-span_info[run].bottom_voxels_start);
                 }
             }

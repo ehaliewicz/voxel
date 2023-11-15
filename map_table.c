@@ -30,7 +30,6 @@ void load_map_table() {
     }
     closedir(d);
   }
-  return(0);
 }
 
 #endif

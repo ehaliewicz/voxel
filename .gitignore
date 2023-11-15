@@ -2,3 +2,5 @@ SDL2/*
 SDL2.dll
 .vscode
 raycast.exe
+res/*
+maps/*

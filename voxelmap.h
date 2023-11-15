@@ -42,8 +42,8 @@ typedef struct {
 } column_runs;
 // 256MB of run data... ouch
 
-f32 normal_pt1_data[1024*1024];
-f32 normal_pt2_data[1024*1024];
+//f32 normal_pt1_data[1024*1024];
+//f32 normal_pt2_data[1024*1024];
 column_header columns_header_data[1024*1024];
 // 256 megs of color data
 column_colors columns_colors_data[1024*1024];
@@ -55,6 +55,7 @@ column_runs columns_runs_data[1024*1024];
 #include "stb_image.h"
 #include "stb_image_resize2.h"
 
+/*
 u8 scratch_colormap[1024*1024*4];
 u32 scratch_depthmap[1024*1024*4];
 
@@ -133,7 +134,7 @@ void load_and_interpolate_depthmap(char* depth_filename) {
     }
 
 }
-
+*/
 
 
 u32 get_voxelmap_idx(s32 x, s32 y) {
@@ -337,6 +338,7 @@ __m256i get_voxelmap_idx_256(__m256i xs, __m256i ys) {
     return (tile_ys<<18)|(tile_xs<<16)|(tile_high_ys<<11)|(tile_high_xs<<6)|(tile_low_ys<<3)|tile_low_xs;
 }
 
+/*
 int is_surface(u32 x, u32 y, u32 z) {
     s32 uy = (y-1);
     s32 dy = (y+1);
@@ -411,12 +413,13 @@ void initialize_voxelmap_run_entry(u32 x, u32 y, u32 single_height_val, u32 colo
     //    *cptr++ = color;
     //}
 }   
-
+*/
 
 typedef struct {
     f32 x,y,z;
 } norm;
 
+/*
 norm get_norm_for_point(int x, int y) {
     u32 center_depth = scratch_depthmap[get_swizzled_map_idx(x,y)];
     f32 min_angle_for_point_right = 0;
@@ -436,6 +439,7 @@ norm get_norm_for_point(int x, int y) {
     f32 SurfaceVectorZF = SurfaceVectorZ / magnitude_surf_vector;
     return (norm){.x = SurfaceVectorXF, .y = SurfaceVectorYF, .z = SurfaceVectorZF};
 }
+*/
 
 typedef struct {
     f32 x, y;
@@ -467,7 +471,7 @@ float3 decode_norm(float2 xy) {
     return (float3){.x=rx, .y=ry, .z=rz};
 }
 
-
+/*
 static void calculate_normals(f32* normal_x_tbl, f32* normal_y_tbl) {
     for(int y = 0; y < 1024; y++) {
         for(int x = 0; x < 1024; x++) {
@@ -536,7 +540,7 @@ static void calculate_normals(f32* normal_x_tbl, f32* normal_y_tbl) {
         }
     }
 }
-
+*/
 
 
 
@@ -622,8 +626,6 @@ void add_sphere(s32 sx, s32 sy, s32 sz, s32 radius) {
 }
 */
 
-#include "libvxl.h"
-#include "libvxl.c"
 #include "stdio.h"
 
 typedef enum {
@@ -632,12 +634,12 @@ typedef enum {
     INSIDE,
 } col_state;
 
-u32 ARGB_to_ABGR(u32 argb) {
-    u8 a = argb>>24;
+u32 convert_voxlap_color_to_abgr(u32 argb) {
+    u8 a = (argb>>24);// | 0b11);
     u8 r = (argb>>16)&0xFF;
     u8 g = (argb>>8)&0xFf;
     u8 b = argb&0xFF;
-    return (a<<24)|(b<<16)|(g<<8)|r;
+    return (0b11<<24)|(a<<24)|(b<<16)|(g<<8)|r;
 }
 
 int load_voxlap_map(char* file) {
@@ -685,7 +687,7 @@ int load_voxlap_map(char* file) {
                 
                 color = (u32 *) (v+4);
                 for(z=top_color_start; z <= top_color_end; z++) {
-                    *output_color_ptr++ = ARGB_to_ABGR(*color++);
+                    *output_color_ptr++ = convert_voxlap_color_to_abgr(*color++);
                 }
 
                 len_top = top_color_end - top_color_start + 1;
@@ -711,7 +713,7 @@ int load_voxlap_map(char* file) {
                 bottom_color_start = bottom_color_end - len_bottom;
 
                 for(z=bottom_color_start; z < bottom_color_end; ++z) {
-                    *output_color_ptr++ = ARGB_to_ABGR(*color++);
+                    *output_color_ptr++ = convert_voxlap_color_to_abgr(*color++);
                 }
 
                 runs[num_runs].top_voxels_start = top_color_start;
@@ -742,7 +744,13 @@ void light_map() {
     for(int y = 0; y < 512; y++) {
         for(int x = 0; x < 512; x++) {
             for(int z = 0; z < 64; z++) {
+                if(!voxel_is_solid(x, y, z)) {
+                    continue;
+                }
                 if(!voxel_is_surface(x, y, z)) {
+                    u32 base_color = voxel_get_color(x, y, z);
+                    base_color |= ((u32)0b11<<24);
+                    voxel_set_color(x, y, z, base_color);
                     continue;
                 }
 
@@ -781,13 +789,16 @@ void light_map() {
                 
                 f32 zero_to_one  = (solid_cells/(f32)samples)/2;
                 f32 one_to_zero = 1-zero_to_one;//(samples-solid_cells)/(f32)samples;
-                f32 one_to_zero_scaled = 255.0 * one_to_zero;
-                u8 one_to_zero_alpha = (u8)floorf(one_to_zero_scaled);
+                f32 one_to_zero_scaled = 63.0 * one_to_zero; // 0 to 63, this is the top 6 bits
+
+                u8 one_to_zero_ao_bits = 0; //((u8)floorf(one_to_zero_scaled));
+                u8 alpha_bits = 0b11;
+                u8 ao_and_alpha_byte = (one_to_zero_ao_bits<<2) | alpha_bits;
                 u32 base_color = voxel_get_color(x, y, z);
-                u8 r = (base_color & 0xFF);
-                u8 g = ((base_color >> 8) & 0xFF);
-                u8 b = ((base_color >> 16) & 0xFF);
-                voxel_set_color(x, y, z, ((one_to_zero_alpha<<24)|(b<<16)|(g<<8)|r));
+                u8 r = (base_color & 0xFF)*one_to_zero;
+                u8 g = ((base_color >> 8) & 0xFF)*one_to_zero;
+                u8 b = ((base_color >> 16) & 0xFF)*one_to_zero;
+                voxel_set_color(x, y, z, ((ao_and_alpha_byte<<24)|(b<<16)|(g<<8)|r));
             }
         }
     }
@@ -805,7 +816,7 @@ void load_map(s32 map_idx) {
 
         map_table_loaded = 1;
     }
-
+    if(num_maps == 0) { printf("Add maps to /maps\n"); exit(1); }
     while(map_idx >= num_maps) { map_idx -= num_maps; }
     char buf[32];
     sprintf(buf, "./maps/%s", &map_name_table[map_idxs[map_idx]]);
