@@ -12,14 +12,14 @@ Put ace of spades .vxl maps in a /maps directory and launch without any argument
 - Controls
 
 F - toggles fog
-L - toggles lighting mode (no lighting / face-normal lighting) (mode 3 currently is the same as mode 1)
+L - toggles lighting mode (no lighting / face-normal lighting / ambient occlusion + face-normal lighting)
 Arrow keys - move forward and back, turn left and right
 Z/X - go down / go up
 A/S - look up / look down
 Q/E - roll left / roll right
 
-Left mouse lets you fly around
 Middle mouse turns blocks transparent (it's a bit buggy right now)
+Right mouse turns blocks bright bink
 
 D - switch render resolution (1x/ 1/2x / 1/4x)
 N - next map
