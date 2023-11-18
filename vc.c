@@ -101,11 +101,6 @@ int main(int argc, char** argv)
             u32 mouse_state = SDL_GetMouseState(&mouse_x, &mouse_y);
             update_mouse_pos(mouse_x, mouse_y);
 
-            if(SDL_BUTTON(1) & mouse_state) {
-                handle_mouse_click();
-            } else {
-                handle_mouse_up();
-            }
             if(SDL_BUTTON(2) & mouse_state) {
                 handle_middle_mouse();
             } else {

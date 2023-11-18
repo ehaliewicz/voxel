@@ -15,4 +15,13 @@ typedef int8_t s8;
 typedef double f64;
 typedef float f32;
 
+
+typedef struct {
+    f32 x, y;
+} float2;
+
+typedef struct {
+    f32 x, y, z;
+} float3;
+
 #endif

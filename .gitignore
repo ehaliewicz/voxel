@@ -4,3 +4,4 @@ SDL2.dll
 raycast.exe
 res/*
 maps/*
+*.exe
