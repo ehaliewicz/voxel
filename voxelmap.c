@@ -23,12 +23,6 @@ typedef struct {
 
 
 
-// 2MB of header data
-//column_header columns_header_data[1024*1024]
-
-//u8 columns_max_y[1024*1024];
-
-
 #define COLUMN_MAX_HEIGHT 128
 #define COLUMN_HEIGHT_SHIFT 7
 typedef struct {
@@ -49,17 +43,11 @@ typedef struct {
 } column_runs;
 // 256MB of run data... ouch
 
-//f32 normal_pt1_data[1024*1024];
-//f32 normal_pt2_data[1024*1024];
 column_header columns_header_data[1024*1024];
 // 256 megs of color data
 column_colors columns_colors_data[1024*1024];
 column_runs columns_runs_data[1024*1024];
 
-
-#define STBI_ONLY_PNG
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
 
 u32 get_voxelmap_idx(s32 x, s32 y) {
     y &= 1023;
@@ -447,9 +435,6 @@ void light_map() {
                     continue;
                 }
                 if(!voxel_is_surface(x, y, z)) {
-                    //u32 base_color = voxel_get_color(x, y, z);
-                    //base_color |= ((u32)0b01<<24);
-                    //voxel_set_color(x, y, z, base_color);
                     continue;
                 }
 
@@ -465,6 +450,9 @@ void light_map() {
                 int samples = 0;
 
 
+
+                // TODO: handle this incrementally per column
+                // can be much much much more efficient
                 for(int ty = y-AMBIENT_OCCLUSION_RADIUS; ty <= y+AMBIENT_OCCLUSION_RADIUS; ty++) {
                     for(int tx = x-AMBIENT_OCCLUSION_RADIUS; tx <= x+AMBIENT_OCCLUSION_RADIUS; tx++) {
                         // don't search below this voxel
