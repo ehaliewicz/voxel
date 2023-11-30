@@ -78,7 +78,7 @@ int main(int argc, char** argv)
     {
         if (SDL_Init(SDL_INIT_VIDEO) < 0) return_defer(1);
         
-        window = SDL_CreateWindow("Voxworld", 40, 40, OUTPUT_WIDTH, OUTPUT_HEIGHT, SDL_WINDOW_RESIZABLE);
+        window = SDL_CreateWindow("Voxworld", 40, 40, OUTPUT_WIDTH, OUTPUT_HEIGHT, SDL_WINDOW_MOUSE_CAPTURE);
         if (window == NULL) return_defer(1);
 
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);// SDL_RENDERER_ACCELERATED);
@@ -101,6 +101,11 @@ int main(int argc, char** argv)
             u32 mouse_state = SDL_GetMouseState(&mouse_x, &mouse_y);
             update_mouse_pos(mouse_x, mouse_y);
 
+            if(SDL_BUTTON(1) & mouse_state) {
+                handle_left_mouse_down(); 
+            } else {
+            }
+
             if(SDL_BUTTON(2) & mouse_state) {
                 handle_middle_mouse();
             } else {
@@ -111,6 +116,7 @@ int main(int argc, char** argv)
             } else {
                 handle_right_mouse_up();
             }
+
 
             // Flush the events
             SDL_Event event;

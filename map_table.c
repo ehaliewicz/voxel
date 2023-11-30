@@ -11,6 +11,9 @@ int map_name_table_cap = 0;
 char* map_name_table = NULL;
 int map_idxs[64];
 
+static int map_table_loaded = 0;
+
+
 void load_map_table() {
   if(map_name_table != NULL) { free(map_name_table); }
   DIR *d;
@@ -30,6 +33,7 @@ void load_map_table() {
     }
     closedir(d);
   }
+  map_table_loaded = 1;
 }
 
 #endif

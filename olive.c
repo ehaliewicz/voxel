@@ -144,7 +144,14 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
         {0, 0, 1, 0, 0},
         {0, 1, 1, 1, 0},
     },
-    ['m'] = {0},
+    ['m'] = {
+        {1, 0, 0, 0, 0},
+        {1, 1, 0, 1, 0},
+        {1, 0, 1, 0, 1},
+        {1, 0, 1, 0, 1},
+        {1, 0, 1, 0, 1},
+        {1, 0, 1, 0, 1},
+    },
     ['n'] = {
         {0, 0, 0, 0, 0},
         {1, 1, 1, 0, 0},
@@ -180,11 +187,11 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
     },
     ['s'] = {
         {0, 0, 0, 0, 0},
-        {0, 1, 1, 0, 0},
-        {1, 0, 0, 0, 0},
+        {0, 0, 1, 1, 0},
         {0, 1, 0, 0, 0},
         {0, 0, 1, 0, 0},
-        {1, 1, 0, 0, 0},
+        {0, 0, 0, 1, 0},
+        {0, 1, 1, 0, 0},
     },
     ['t'] = {
         {0, 0, 0, 0, 0},
@@ -194,7 +201,14 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
         {0, 1, 0, 0, 0},
         {0, 0, 1, 0, 0},
     },
-    ['u'] = {0},
+    ['u'] = {
+        {0, 0, 0 ,0 ,0},
+        {1, 0, 0 ,1 ,0},
+        {1, 0, 0, 1 ,0},
+        {1, 0, 0, 1 ,0},
+        {1, 0, 0, 1 ,0},
+        {0, 1, 1, 0, 0},
+    },
     ['v'] = {
         {0, 0, 0 ,0 ,0},
         {1, 0, 0 ,0 ,1},
@@ -211,14 +225,20 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
         {1, 0, 1, 0, 1},
         {0, 1, 1, 1, 1},
     },
-    ['x'] = {0},
+    ['x'] = {
+        {0, 0, 0, 0, 0},
+        {1, 0, 0, 0, 1},
+        {0, 1, 0, 1, 0},
+        {0, 0, 1, 0, 0},
+        {0, 1, 0, 1, 0},
+        {1, 0, 0, 0, 1},},
     ['y'] = {
         {0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0},
-        {0, 0, 0, 0, 0},
+        {1, 0, 0, 1, 0},
+        {1, 0, 0, 1, 0},
+        {0, 1, 1, 1, 0},
+        {0, 0, 0, 1, 0},
+        {1, 1, 1, 0, 0},
     },
     ['z'] = {0},
 
@@ -561,6 +581,19 @@ OLIVECDEF void olivec_rect(Olivec_Canvas oc, int x, int y, int w, int h, uint32_
     }
 }
 
+
+OLIVECDEF void olivec_rect_no_blend(Olivec_Canvas oc, int x, int y, int w, int h, uint32_t color)
+{
+    Olivec_Normalized_Rect nr = {0};
+    if (!olivec_normalize_rect(x, y, w, h, oc.width, oc.height, &nr)) return;
+    for (int x = nr.x1; x <= nr.x2; ++x) {
+        for (int y = nr.y1; y <= nr.y2; ++y) {
+            OLIVEC_PIXEL(oc, x, y) = color;
+        }
+    }
+}
+
+
 OLIVECDEF void olivec_frame(Olivec_Canvas oc, int x, int y, int w, int h, size_t t, uint32_t color)
 {
     if (t == 0) return; // Nothing to render
@@ -891,6 +924,27 @@ OLIVECDEF void olivec_text(Olivec_Canvas oc, const char *text, int tx, int ty, O
                 if (0 <= px && px < (int) oc.width && 0 <= py && py < (int) oc.height) {
                     if (glyph[dy*font.width + dx]) {
                         olivec_rect(oc, px, py, glyph_size, glyph_size, color);
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+OLIVECDEF void olivec_text_no_blend(Olivec_Canvas oc, const char *text, int tx, int ty, Olivec_Font font, size_t glyph_size, uint32_t color)
+{
+    for (size_t i = 0; *text; ++i, ++text) {
+        int gx = tx + i*font.width*glyph_size;
+        int gy = ty;
+        const char *glyph = &font.glyphs[(*text)*sizeof(char)*font.width*font.height];
+        for (int dy = 0; (size_t) dy < font.height; ++dy) {
+            for (int dx = 0; (size_t) dx < font.width; ++dx) {
+                int px = gx + dx*glyph_size;
+                int py = gy + dy*glyph_size;
+                if (0 <= px && px < (int) oc.width && 0 <= py && py < (int) oc.height) {
+                    if (glyph[dy*font.width + dx]) {
+                        olivec_rect_no_blend(oc, px, py, glyph_size, glyph_size, color);
                     }
                 }
             }
