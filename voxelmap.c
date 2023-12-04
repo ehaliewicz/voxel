@@ -18,6 +18,10 @@
 
 // 32 entry cache line
 
+#define MAP_X_SIZE 1024
+#define MAP_Y_SIZE 1024
+#define MAP_Z_SIZE  256
+
 typedef struct {
     u8 top_y;     // duplicate of top in the topmost span of this column
     u8 num_runs;
