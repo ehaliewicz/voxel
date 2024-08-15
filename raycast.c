@@ -16,11 +16,11 @@
 #define DAY_MAX_Z 512
 #define NIGHT_MAX_Z 512
 #define NO_FOG_MAX_Z 2048
-
+    
 #define PI 3.14159265359
 
 #define PROFILER 0
-#define NUM_THREADS 1
+#define NUM_THREADS 8
 
 #include "selectable_profiler.c"
 #include <SDL2/SDL.h>
@@ -105,7 +105,8 @@ float deg_to_rad(float degrees) {
     return degrees * PI / 180.0;
 }
 
-f32 desired_fov_degrees = 90;
+f32 desired_fov_degrees = 120;
+
 
 f32 plane_x = 0.0;
 f32 plane_y;// = -1.20;
@@ -442,7 +443,7 @@ void handle_input(f32 dt) {
     }
 
     pitch_ang += dt*0.017*5 * lookupdown;// -= dt*400;
-    pitch_ang = min(max(pitch_ang, -.45), .45);
+    //pitch_ang = min(max(pitch_ang, -1.57), 1.57);//-.45), .45);
 
 
     
@@ -743,8 +744,8 @@ __m256 abs_ps(__m256 x) {
 
 f32 rotate_x(f32 angle, s32 input_x, s32 input_y) {
     
-    f32 sinroll = sinf(roll);
-    f32 cosroll = cosf(roll);            
+    f32 sinroll = sinf(angle);
+    f32 cosroll = cosf(angle);            
     f32 yy = (s32)(input_y-render_height/2);
     f32 xx = (s32)(input_x-render_width/2);
     f32 temp_xx = xx * cosroll - yy * sinroll;
@@ -754,8 +755,8 @@ f32 rotate_x(f32 angle, s32 input_x, s32 input_y) {
 
 f32 rotate_y(f32 angle, s32 input_x, s32 input_y) {
     
-    f32 sinroll = sinf(roll);
-    f32 cosroll = cosf(roll);            
+    f32 sinroll = sinf(angle);
+    f32 cosroll = cosf(angle);            
     f32 yy = (s32)(input_y-render_height/2);
     f32 xx = (s32)(input_x-render_width/2);
     f32 temp_xx = xx * cosroll - yy * sinroll;
@@ -803,8 +804,12 @@ s32 fb_swizzle(s32 x, s32 y) {
     u32 low_x = x & 0b111;
     u32 high_x = x >> 3;
 
-    return (high_x<<(num_render_size_bits+3))|(y<<3)|low_x;
+// now it might be a bit faster vertically contiguous, for the scalar case
+// but cpus are pretty good at handling constant stride stuff
+// and the stride here would be 8
 
+// however, this means we can write groups of 8 pixels all at once
+    return (high_x<<(num_render_size_bits+3))|(y<<3)|low_x;
 }
 
 
@@ -1018,11 +1023,236 @@ __m256i linear_to_srgb_255_256(__m256 cols) {
 
 void handle_mouse_input(f32 dt);
 
+typedef struct {
+    f32 x, y, z;
+} vect3d;
+
+typedef struct {
+    f32 x, y;
+} vect2d;
+
+typedef struct {
+    f32 x, y, z, w;
+} vect4d;
+
+f32 vect2d_len(vect2d v) {
+    return sqrtf(v.x*v.x + v.y*v.y);
+}
+
+vect3d vect3d_mult_scalar(vect3d v, f32 scalar) {
+    vect3d res;
+    res.x = v.x * scalar;
+    res.y = v.y * scalar;
+    res.z = v.z * scalar;
+    return res;
+}
+
+vect3d vect3d_add(vect3d a, vect3d b) {
+    vect3d res;
+    res.x = a.x + b.x;
+    res.y = a.y + b.y;
+    res.z = a.z + b.z;
+    return res;
+}
+
+vect4d vect4d_add(vect4d a, vect4d b) {
+    vect4d res;
+    res.x = a.x + b.x;
+    res.y = a.y + b.y;
+    res.z = a.z + b.z;
+    res.w = a.w;
+    return res;
+}
+
+vect4d vect3d_to_4d(vect3d a) {
+    vect4d res;
+    res.x = a.x;
+    res.y = a.y;
+    res.z = a.z;
+    res.w = 1;
+    return res;
+}
+
+typedef struct {
+    f32 els[4][4];
+} mat44;
+
+void mat44_mult(mat44* src1, mat44* src2, mat44* dest) {
+    dest->els[0][0] = src1->els[0][0] * src2->els[0][0] + src1->els[0][1] * src2->els[1][0] + src1->els[0][2] * src2->els[2][0] + src1->els[0][3] * src2->els[3][0]; 
+    dest->els[0][1] = src1->els[0][0] * src2->els[0][1] + src1->els[0][1] * src2->els[1][1] + src1->els[0][2] * src2->els[2][1] + src1->els[0][3] * src2->els[3][1]; 
+    dest->els[0][2] = src1->els[0][0] * src2->els[0][2] + src1->els[0][1] * src2->els[1][2] + src1->els[0][2] * src2->els[2][2] + src1->els[0][3] * src2->els[3][2]; 
+    dest->els[0][3] = src1->els[0][0] * src2->els[0][3] + src1->els[0][1] * src2->els[1][3] + src1->els[0][2] * src2->els[2][3] + src1->els[0][3] * src2->els[3][3]; 
+    dest->els[1][0] = src1->els[1][0] * src2->els[0][0] + src1->els[1][1] * src2->els[1][0] + src1->els[1][2] * src2->els[2][0] + src1->els[1][3] * src2->els[3][0]; 
+    dest->els[1][1] = src1->els[1][0] * src2->els[0][1] + src1->els[1][1] * src2->els[1][1] + src1->els[1][2] * src2->els[2][1] + src1->els[1][3] * src2->els[3][1]; 
+    dest->els[1][2] = src1->els[1][0] * src2->els[0][2] + src1->els[1][1] * src2->els[1][2] + src1->els[1][2] * src2->els[2][2] + src1->els[1][3] * src2->els[3][2]; 
+    dest->els[1][3] = src1->els[1][0] * src2->els[0][3] + src1->els[1][1] * src2->els[1][3] + src1->els[1][2] * src2->els[2][3] + src1->els[1][3] * src2->els[3][3]; 
+    dest->els[2][0] = src1->els[2][0] * src2->els[0][0] + src1->els[2][1] * src2->els[1][0] + src1->els[2][2] * src2->els[2][0] + src1->els[2][3] * src2->els[3][0]; 
+    dest->els[2][1] = src1->els[2][0] * src2->els[0][1] + src1->els[2][1] * src2->els[1][1] + src1->els[2][2] * src2->els[2][1] + src1->els[2][3] * src2->els[3][1]; 
+    dest->els[2][2] = src1->els[2][0] * src2->els[0][2] + src1->els[2][1] * src2->els[1][2] + src1->els[2][2] * src2->els[2][2] + src1->els[2][3] * src2->els[3][2]; 
+    dest->els[2][3] = src1->els[2][0] * src2->els[0][3] + src1->els[2][1] * src2->els[1][3] + src1->els[2][2] * src2->els[2][3] + src1->els[2][3] * src2->els[3][3]; 
+    dest->els[3][0] = src1->els[3][0] * src2->els[0][0] + src1->els[3][1] * src2->els[1][0] + src1->els[3][2] * src2->els[2][0] + src1->els[3][3] * src2->els[3][0]; 
+    dest->els[3][1] = src1->els[3][0] * src2->els[0][1] + src1->els[3][1] * src2->els[1][1] + src1->els[3][2] * src2->els[2][1] + src1->els[3][3] * src2->els[3][1]; 
+    dest->els[3][2] = src1->els[3][0] * src2->els[0][2] + src1->els[3][1] * src2->els[1][2] + src1->els[3][2] * src2->els[2][2] + src1->els[3][3] * src2->els[3][2]; 
+    dest->els[3][3] = src1->els[3][0] * src2->els[0][3] + src1->els[3][1] * src2->els[1][3] + src1->els[3][2] * src2->els[2][3] + src1->els[3][3] * src2->els[3][3]; 
+}
+
+vect3d mat44_mult_vec4(vect4d* src1, mat44* src2) {
+    vect3d res;
+    res.x = src2->els[0][0] * src1->x + src2->els[1][0] * src1->y + src2->els[2][0] * src1->z + src2->els[3][0] * src1->w;
+    res.y = src2->els[0][1] * src1->x + src2->els[1][1] * src1->y + src2->els[2][1] * src1->z + src2->els[3][1] * src1->w;
+    res.z = src2->els[0][2] * src1->x + src2->els[1][2] * src1->y + src2->els[2][2] * src1->z + src2->els[3][2] * src1->w;
+    return res;
+}
+
+void get_camera_mat44(f32 pitch_ang, f32 roll_ang, f32 yaw_ang, mat44* res) {
+    f32 cp = cos(pitch_ang);
+    f32 sp = sin(pitch_ang);
+    f32 cy = cos(yaw_ang);
+    f32 sy = sin(yaw_ang);
+    f32 cr = cos(roll_ang);
+    f32 sr = sin(roll_ang);
+    mat44 pitch = (mat44){.els = { 
+        {1.0f, 0.0f, 0.0f, 0.0f},
+        //{1.0f, cp, sp, 0.0f},
+        //{1.0f, -sp, cp, 0.0f},
+        {0.0f, cp, sp, 0.0f},
+        {0.0f, -sp, cp, 0.0f},
+        {0.0f, 0.0f, 0.0f, 1.0f},
+    }};
+    mat44 yaw = (mat44){.els = {
+        {cy, 0.0f, -sy,  0.0f},
+        {0.0f, 1.0f, 0.0f, 0.0f},
+        {sy, 0.0f, cy, 0.0f},
+        {0.0f, 0.0f, 0.0f, 1.0f},
+    }};
+    mat44 roll = (mat44){.els = {
+        {cr, sr, 0.0f, 0.0f},
+        {-sr, cr, 0.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 0.0f, 1.0f}
+    }};
+
+    mat44 inter;
+    mat44_mult(&roll, &yaw, &inter);
+    mat44_mult(&inter, &pitch, res);
+}
+    
+void pix(int x, int y, uint32_t color) {
+    u32 fb_idx = fb_swizzle(x, y);
+    albedo_buffer[fb_idx] = color;  
+    world_pos_buffer[fb_idx] = 0b01111111;
+}
+
+void draw_vert2d(vect2d v, u32 col) {
+    if(v.x < 0 || v.y < 0) { return; }
+    for(int y = v.y-2; y < v.y+3; y++) {
+        for(int x = v.x-2; x < v.x+3; x++) {
+            if(x > 2 && x < (s32)render_size-2 && y > 2 && y < (s32)render_size-2) {
+                pix(x, y, col);
+            }
+       }
+    }
+}
+
+int in_bounds(int x, int y) {
+    return x >= 0 && x < (s32)render_size && y >= 0 && y < (s32)render_size;
+}
+
+void draw_line(int x1, int y1, int x2, int y2, uint32_t color) {
+    int dx = x2 - x1;
+    int dy = y2 - y1;
+
+    // If both of the differences are 0 there will be a division by 0 below.
+    if (dx == 0 && dy == 0) {
+        if (in_bounds(x1, y1)) {
+            pix(x1, y1, color);
+        }
+        return;
+    }
+
+    if (OLIVEC_ABS(int, dx) > OLIVEC_ABS(int, dy)) {
+        if (x1 > x2) {
+            OLIVEC_SWAP(int, x1, x2);
+            OLIVEC_SWAP(int, y1, y2);
+        }
+
+        for (int x = x1; x <= x2; ++x) {
+            int y = dy*(x - x1)/dx + y1;
+            // TODO: move boundary checks out side of the loops in olivec_draw_line
+            if (in_bounds(x, y)) {
+                pix(x, y, color);
+            }
+        }
+    } else {
+        if (y1 > y2) {
+            OLIVEC_SWAP(int, x1, x2);
+            OLIVEC_SWAP(int, y1, y2);
+        }
+
+        for (int y = y1; y <= y2; ++y) {
+            int x = dx*(y - y1)/dy + x1;
+            // TODO: move boundary checks out side of the loops in olivec_draw_line
+            if (in_bounds(x, y)) {
+                pix(x, y, color);
+            }
+        }
+    }
+}
+
+vect3d rotate_vect3d(vect3d v, float yaw, float pitch, float roll) { //X Y Z Rotation
+    float cosa = cosf(yaw); float cosb = cosf(pitch); float cosc = cosf(roll);
+    float sina = sinf(yaw); float sinb = sinf(pitch); float sinc = sinf(roll);
+
+    float Axx = cosa * cosb;
+    float Axy = cosa * sinb * sinc - sina * cosc;
+    float Axz = cosa * sinb * cosc + sina * sinc;
+
+    float Ayx = sina * cosb;
+    float Ayy = sina * sinb * sinc + cosa * cosc;
+    float Ayz = sina * sinb * cosc - cosa * sinc;
+
+    float Azx = -sinb;
+    float Azy = cosb * sinc;
+    float Azz = cosb * cosc;
+
+    float px = v.x; float py = v.y; float pz = v.z;
+    vect3d r;
+    r.x = Axx * px + Axy * py + Axz * pz;
+    r.y = Ayx * px + Ayy * py + Ayz * pz;
+    r.z = Azx * px + Azy * py + Azz * pz;
+    return r;
+}
+
+
+vect2d project_and_adjust_vect3d(vect3d v) {
+    f32 scale = 1.0 / tanf(deg_to_rad(desired_fov_degrees)/2.0);
+    const f32 const1 = 0.5f * render_width;
+    const f32 const2 = 0.5f * render_width * scale / min(1, aspect_ratio);
+    const f32 const3 = 0.5f * render_height;
+    const f32 const4 = 0.5f * render_height * scale * max(1, aspect_ratio);
+    vect2d res;
+    res.x = const1 + const2 * v.x / v.z;
+    res.y = render_height - (const3 + const4 * v.y / v.z);
+    
+    s32 y_off = ((render_size-render_height)/2);
+    s32 x_off = ((render_size-render_width)/2);
+    res.x += x_off;
+    res.y += y_off;
+    return res;
+}
+
+typedef enum {
+    CLIP_OUT,
+    CLIP_IN
+} state;
+
+
 Olivec_Canvas vc_render(f32 dt) {
     handle_mouse_input(dt);
     handle_input(dt);   
 
-        
+
+
     static int setup_thread_pool = 0;
     if(!setup_thread_pool) {
         pool = thread_pool_create(NUM_THREADS);
@@ -1128,6 +1358,181 @@ Olivec_Canvas vc_render(f32 dt) {
     }
 
 
+
+
+    vect3d up_vp_vect = {.x = 0.0f, .y = -1.0f, .z = 0.0f};
+    vect3d q0_left_vect = {.x = -.7f, .y = -1.0f, .z = .7f};
+    vect3d q1_left_vect = {.x = 0.7f, .y = -1.0f, .z = .7f};
+    vect3d q2_left_vect = {.x = 0.7f, .y = -1.0f, .z = -.7f};
+    vect3d q3_left_vect = {.x = -.7f, .y = -1.0f, .z = -.7f};
+    f32 cam_to_screen_dist = vect2d_len((vect2d){.x = dir_x, .y = dir_y});
+    if(pitch_ang != 0) {
+        vect3d screen_plane_up_vp = vect3d_mult_scalar(up_vp_vect, -cam_to_screen_dist/sin(pitch_ang));
+        q0_left_vect = vect3d_mult_scalar(q0_left_vect, -cam_to_screen_dist/sin(pitch_ang));
+        q1_left_vect = vect3d_mult_scalar(q1_left_vect, -cam_to_screen_dist/sin(pitch_ang));
+        q2_left_vect = vect3d_mult_scalar(q2_left_vect, -cam_to_screen_dist/sin(pitch_ang));
+        q3_left_vect = vect3d_mult_scalar(q3_left_vect, -cam_to_screen_dist/sin(pitch_ang));
+
+        mat44 camera_mat44;
+        //f32 yaw_ang = atan2f(dir_y, dir_x);
+        get_camera_mat44(pitch_ang, 0, 0, &camera_mat44);
+        //get_camera_mat44(pitch_ang, 0, yaw_ang, &camera_mat44);
+
+        vect4d screen_plane_vp_4d = (vect4d){
+            .x = screen_plane_up_vp.x, .y = screen_plane_up_vp.y, .z = screen_plane_up_vp.z, .w = 1
+        };
+        vect4d q0_left_vect_4d = (vect4d){
+            .x = q0_left_vect.x, .y = q0_left_vect.y, .z = q0_left_vect.z, .w = 1
+        };
+        vect4d q1_left_vect_4d = (vect4d){
+            .x = q1_left_vect.x, .y = q1_left_vect.y, .z = q1_left_vect.z, .w = 1
+        };
+        vect4d q2_left_vect_4d = (vect4d){
+            .x = q2_left_vect.x, .y = q2_left_vect.y, .z = q2_left_vect.z, .w = 1
+        };
+        vect4d q3_left_vect_4d = (vect4d){
+            .x = q3_left_vect.x, .y = q3_left_vect.y, .z = q3_left_vect.z, .w = 1
+        };
+        
+
+        //vect3d res_w1;
+        vect3d transformed_vp = mat44_mult_vec4(&screen_plane_vp_4d, &camera_mat44);
+        vect3d transformed_q0_left = mat44_mult_vec4(&q0_left_vect_4d, &camera_mat44);
+        vect3d transformed_q1_left = mat44_mult_vec4(&q1_left_vect_4d, &camera_mat44);
+        vect3d transformed_q2_left = mat44_mult_vec4(&q2_left_vect_4d, &camera_mat44);
+        vect3d transformed_q3_left = mat44_mult_vec4(&q3_left_vect_4d, &camera_mat44);
+
+        vect3d cam_space_tris[4][3] = {
+            {transformed_vp, transformed_q0_left, transformed_q1_left},
+            {transformed_vp, transformed_q1_left, transformed_q2_left},
+            {transformed_vp, transformed_q2_left, transformed_q3_left},
+            {transformed_vp, transformed_q3_left, transformed_q0_left}
+        };
+
+
+        int num_clipped_tris = 0;
+        int num_verts_per_clipped_tri[4];
+        vect3d clipped_tris[4][4];
+
+
+        int clip_and_draw_indexes[3][2] = {{0,1},{1,2},{2,0}};
+        for(int i = 0; i < 4; i++) {
+            vect3d v0 = cam_space_tris[i][0];
+            vect3d v1 = cam_space_tris[i][1];
+            vect3d v2 = cam_space_tris[i][2];
+            int trivial_accept = (v0.z > 0 && v1.z > 0 && v2.z > 0);
+            int trivial_reject = (v0.z <= 0 && v1.z <= 0 && v2.z <= 0);
+            int maybe_accept = (v0.z > 0 || v1.z > 0 || v2.z > 0);
+            if(trivial_reject) { continue; }
+            if(trivial_accept) {
+                vect2d proj_v0 = project_and_adjust_vect3d(v0);
+                vect2d proj_v1 = project_and_adjust_vect3d(v1);
+                vect2d proj_v2 = project_and_adjust_vect3d(v2);
+                clipped_tris[num_clipped_tris][0] = v0;
+                clipped_tris[num_clipped_tris][1] = v1;
+                clipped_tris[num_clipped_tris][2] = v2;
+                num_verts_per_clipped_tri[num_clipped_tris++] = 3;
+                continue;
+            }
+
+            // if we get here, it's time to clip.
+
+
+            int num_verts = 0;
+            int cur_state = CLIP_IN;
+            if(v0.z <= 0) {
+                cur_state = CLIP_OUT;
+            } else {
+                clipped_tris[num_clipped_tris][num_verts++] = v0;
+            }
+
+
+            int prev_j = 0;
+
+            for(int jidx = 0; jidx < 3; jidx++) {
+                int prev_j = clip_and_draw_indexes[jidx][0];
+                int cur_j = clip_and_draw_indexes[jidx][1];
+                vect3d prev_vert = cam_space_tris[i][prev_j];
+                vect3d cur_vert = cam_space_tris[i][cur_j];
+
+                float dx_dz = (cur_vert.x - prev_vert.x)/(cur_vert.z - prev_vert.z);
+                float dy_dz = (cur_vert.y - prev_vert.y)/(cur_vert.z - prev_vert.z);
+                if(cur_state == CLIP_IN) {
+
+                    if(cur_vert.z <= 0) {
+                        float increment = prev_vert.z - 0.1f;
+
+                        float intersection_x = prev_vert.x + (increment * dx_dz);
+                        float intersection_y = prev_vert.y + (increment * dy_dz);
+                        vect3d intersection_vert = {
+                            .x = intersection_x,
+                            .y = intersection_y,
+                            .z = 0.1f,
+                        };
+                        // move from in to out
+                        // add intersection point
+                        clipped_tris[num_clipped_tris][num_verts++] = intersection_vert;
+                        
+                        cur_state = CLIP_OUT;
+                    } else {
+                        clipped_tris[num_clipped_tris][num_verts++] = cur_vert;
+                    }
+                } else {
+                    if(cur_vert.z <= 0) {
+                        // still out, do nothing
+                    } else {
+                        // we were out, now we're going in
+                        float increment = 0.1f - prev_vert.z;
+                        float intersection_x = prev_vert.x + (increment * dx_dz);
+                        float intersection_y = prev_vert.x + (increment * dy_dz);
+                        vect3d intersection_vert = {
+                            .x = intersection_x,
+                            .y = intersection_y,
+                            .z = 0.1f,
+                        };
+                        clipped_tris[num_clipped_tris][num_verts++] = intersection_vert;
+                        cur_state = CLIP_IN;
+                    }
+                }
+            }
+            num_verts_per_clipped_tri[num_clipped_tris++] = num_verts;
+        }
+
+        int num_verts_per_screen_space_tri[4];
+        vect2d screen_space_tris[4][4];
+        int num_screen_space_tris = 0;
+        for(int i = 0; i < num_clipped_tris; i++) {
+            for(int j = 0; j < num_verts_per_clipped_tri[i]; j++) {
+                screen_space_tris[i][j] = project_and_adjust_vect3d(clipped_tris[i][j]);
+            }
+            num_verts_per_screen_space_tri[i] = num_verts_per_clipped_tri[i];
+            num_screen_space_tris++;
+        }
+
+
+        const u32 PINK = 0xFFB469FF;
+        const u32 RED = 0xFF0000FF;
+        const u32 GREEN = 0xFF00FF00;
+        const u32 BLUE = 0xFFFF0000;
+        const u32 YELLOW = 0xFFFFFF00;
+        u32 poly_colors[4] = {
+            RED, GREEN, BLUE, YELLOW
+        };
+
+        for(int i = 0; i < num_screen_space_tris; i++) {
+            int prev_j = 0;
+            for(int j = num_verts_per_screen_space_tri[i]-1; j >= 0; j--) {
+                vect2d v0 = screen_space_tris[i][prev_j];
+                vect2d v1 = screen_space_tris[i][j];
+                prev_j = j;
+                u32 color = poly_colors[i];
+                draw_line(v0.x, v0.y, v1.x, v1.y, color);
+
+            }
+
+        }
+
+    }
 
 
     // post-render cleanup of non-drawn pixels DOES NOT WORK
@@ -1368,6 +1773,7 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
     //f32 row_y = rotate_y(roll, min_x, min_y);
     //f32 row_x = rotate_x(roll, min_x, min_y);
+    
     f32 col_y = rotate_y(roll, min_x, min_y);
     f32 col_x = rotate_x(roll, min_x, min_y);
 
@@ -1392,6 +1798,7 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     __m256 one_quarter_ps_vec = _mm256_set1_ps(0.25);
     __m256 one_eighth_ps_vec = _mm256_set1_ps(1/8.0);
     __m256 one_sixteenth_ps_vec = _mm256_set1_ps(1/16.0);
+    __m256i one_vec = _mm256_set1_epi32(1);
     __m256 one_ps_vec = _mm256_set1_ps(1);
     __m256 two_ps_vec = _mm256_set1_ps(2);
 
@@ -1413,9 +1820,6 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     __m256 one_over_scale_height_vec = _mm256_set1_ps(1/scale_height);
     __m256 scale_height_vec = _mm256_set1_ps(scale_height);
     
-    f32 pitch = pitch_ang_to_pitch(pitch_ang);
-    __m256 pitch_vec = _mm256_set1_ps(pitch);
-
     __m256 dir_x_vec = _mm256_set1_ps(dir_x);
     __m256 dir_y_vec = _mm256_set1_ps(dir_y);
     __m256 plane_x_vec = _mm256_set1_ps(plane_x);
@@ -1432,8 +1836,6 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     __m256 sun_vec_x_vec = _mm256_set1_ps(sun_vec_x);
     __m256 sun_vec_y_vec = _mm256_set1_ps(sun_vec_y);
     __m256 sun_vec_z_vec = _mm256_set1_ps(sun_vec_z);
-
-    __m256i one_vec = _mm256_set1_epi32(1);
 
     __m256 amb_light_factor_vec = _mm256_set1_ps(amb_light_factor);
     __m256i background_color_vec = _mm256_set1_epi32(background_color);
@@ -1537,9 +1939,15 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             // for partially transparent pixels this will be some non-zero number :) 
             __m256 one_minus_old_coverages = _mm256_div_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(low_two_bits_mask, albedo_coverages)), _mm256_set1_ps(3.0));
             
-            float_rs = _mm256_min_ps(one_ps_vec, _mm256_add_ps(float_rs, _mm256_mul_ps(linear_background_color_r_ps_vec, one_minus_old_coverages)));
-            float_gs = _mm256_min_ps(one_ps_vec, _mm256_add_ps(float_gs, _mm256_mul_ps(linear_background_color_g_ps_vec, one_minus_old_coverages)));
-            float_bs = _mm256_min_ps(one_ps_vec, _mm256_add_ps(float_bs, _mm256_mul_ps(linear_background_color_b_ps_vec, one_minus_old_coverages)));
+            float_rs = _mm256_min_ps(one_ps_vec, 
+                                    _mm256_add_ps(float_rs, 
+                                                    _mm256_mul_ps(linear_background_color_r_ps_vec, one_minus_old_coverages)));
+            float_gs = _mm256_min_ps(one_ps_vec, 
+                                    _mm256_add_ps(float_gs, 
+                                                _mm256_mul_ps(linear_background_color_g_ps_vec, one_minus_old_coverages)));
+            float_bs = _mm256_min_ps(one_ps_vec, 
+                                    _mm256_add_ps(float_bs, 
+                                                _mm256_mul_ps(linear_background_color_b_ps_vec, one_minus_old_coverages)));
             
 
             // blend non-opaque pixels 
@@ -2415,13 +2823,12 @@ void fill_empty_entries(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
         //EndCountedTimeBlock(coverage_fill_empty_entries, max_y-min_y);
     }
     EndTimeBlock(coverage_fill_empty_entries);
-
 }
 
 u64 total_vector_samples;
 u64 reused_vector_samples;
 
-// BREAKS
+
 void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     
     
@@ -2438,29 +2845,52 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     
     
     f32 pitch = pitch_ang_to_pitch(pitch_ang);
-    u8 prev_sides[8], next_sides[8];
+
 
     profile_block raycast_vector_block;
     TimeBlock(raycast_vector_block, "raycast vector");
 
-    int xs[8] = {0,1,2,3,4,5,6,7};
-    f32 camera_space_xs[8];
-    for(int i = 0; i < 8; i++) {
-        camera_space_xs[i] = ((2*xs[i])/(f32)render_size)-1;
-    }
+    //__m256i prev_sides, next_sides;
+    //u8 prev_sides[8], next_sides[8];
+    __m256i prev_sides = _mm256_set1_epi32(0);
+    __m256i next_sides = _mm256_set1_epi32(0);
+
+    //for(int i = 0; i < 8; i++) {
+    //    camera_space_xs[i] = ((2*xs[i])/(f32)render_size)-1;
+    //}
     f32 camera_space_x_per_dx = 2.0/render_size;
     f32 camera_space_x_per_8_x = 8*camera_space_x_per_dx;
 
     __m256i two_fifty_five_vec = _mm256_set1_epi32(255);
     __m256 zero_ps_vec = _mm256_set1_ps(0);
+    __m256 one_ps_vec = _mm256_set1_ps(1);
+    __m256 two_ps_vec = _mm256_set1_ps(2);
+    __m256i one_vec = _mm256_set1_epi32(1);
+    __m256i negative_one_vec = _mm256_set1_epi32(-1);
+    __m256 one_e_30_vec = _mm256_set1_ps(1e30);
     __m256i zero_vec = _mm256_set1_epi32(0);
     __m256 height_vec = _mm256_set1_ps(height);
     __m256i pitch_vec = _mm256_set1_epi32(pitch);
+
+    __m256 dir_x_vec = _mm256_set1_ps(dir_x);
+    __m256 dir_y_vec = _mm256_set1_ps(dir_y);
+    __m256 plane_x_vec = _mm256_set1_ps(plane_x);
+    __m256 plane_y_vec = _mm256_set1_ps(plane_y);
+    __m256 scale_height_vec = _mm256_set1_ps(scale_height);
+
+    __m256i cur_map_max_height_vec = _mm256_set1_epi32(cur_map_max_height);
+
+    __m256 max_z_vec = _mm256_set1_ps(max_z);
 
     //f32 dir_x_vec[8] = {dir_x,dir_x,dir_x,dir_x,dir_x,dir_x,dir_x,dir_x};
     //f32 dir_y_vec[8] = {dir_y,dir_y}
 
     int min_x_aligned = min_x & ~0b11111;
+    //int xs[8] = {0,1,2,3,4,5,6,7};
+    __m256i xs = _mm256_setr_epi32(
+        min_x_aligned+0,min_x_aligned+1,min_x_aligned+2,min_x_aligned+3,
+        min_x_aligned+4,min_x_aligned+5,min_x_aligned+6,min_x_aligned+7);
+    __m256i dxs_vec = _mm256_set1_epi32(8);
     //for(int x = min_x; x < max_x; x += 8) {
     for(int x = min_x_aligned; x < max_x; x += 8) {
         //int next_drawable_min_y = min_y;
@@ -2468,14 +2898,22 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
         
         // TODO: vectorize
-        int next_drawable_min_ys[8] = {min_y, min_y, min_y, min_y, min_y, min_y, min_y, min_y};
-        int prev_drawn_max_ys[8] = {max_y+1, max_y+1, max_y+1, max_y+1, max_y+1, max_y+1, max_y+1, max_y+1};
+        //int next_drawable_min_ys[8] = {min_y, min_y, min_y, min_y, min_y, min_y, min_y, min_y};
+        //int prev_drawn_max_ys[8] = {max_y+1, max_y+1, max_y+1, max_y+1, max_y+1, max_y+1, max_y+1, max_y+1};
+        __m256i next_drawable_min_ys = _mm256_set1_epi32(min_y);
+        __m256i prev_drawn_max_ys = _mm256_set1_epi32(max_y+1);
 
         //f32 camera_space_x = ((2 * x) / ((f32)render_size)) - 1; //x-coordinate in camera space
-        f32 camera_space_xs[8];
-        for(int i = 0; i < 8; i++) {
-            camera_space_xs[i] = ((2 * (x+i)) / ((f32)render_size)) - 1;
-        }
+        //f32 camera_space_xs[8];
+        //for(int i = 0; i < 8; i++) {
+        //    camera_space_xs[i] = ((2 * (x+i)) / ((f32)render_size)) - 1;
+        //}
+        __m256 camera_space_xs = _mm256_sub_ps(
+                                    _mm256_div_ps(
+                                        _mm256_mul_ps(_mm256_cvtepi32_ps(xs), two_ps_vec),
+                                        _mm256_set1_ps(render_size)
+                                    ),
+                                    one_ps_vec);
 
         // TODO: vectorize
         //int camera_space_xs[8];
@@ -2487,11 +2925,14 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
         
         // TODO: vectorize
-        f32 ray_dir_xs[8], ray_dir_ys[8];
-        for(int i = 0; i < 8; i++) {
-            ray_dir_xs[i] = dir_x + (plane_x * camera_space_xs[i]);
-            ray_dir_ys[i] = dir_y + (plane_y * camera_space_xs[i]);
-        }
+        __m256 ray_dir_xs = _mm256_add_ps(dir_x_vec, _mm256_mul_ps(plane_x_vec, camera_space_xs));
+        __m256 ray_dir_ys = _mm256_add_ps(dir_y_vec, _mm256_mul_ps(plane_y_vec, camera_space_xs));
+        
+        //f32 ray_dir_xs[8], ray_dir_ys[8];
+        //for(int i = 0; i < 8; i++) {
+        //    ray_dir_xs[i] = dir_x + (plane_x * camera_space_xs[i]);
+        //   ray_dir_ys[i] = dir_y + (plane_y * camera_space_xs[i]);
+        //}
 
         //which box of the map we're in
         s32 map_x = ((s32)pos_x);
@@ -2508,11 +2949,21 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
         
         // TODO: vectorize
-        f32 delta_dist_xs[8], delta_dist_ys[8];
-        for(int i = 0; i < 8; i++) {
-            delta_dist_xs[i] = (ray_dir_xs[i] == 0.0f ? 1e30 : (fabs(1/ray_dir_xs[i])));
-            delta_dist_ys[i] = (ray_dir_ys[i] == 0.0f ? 1e30 : (fabs(1/ray_dir_ys[i])));
-        }
+        __m256 ray_dir_xs_eq_zero = _mm256_cmp_ps(ray_dir_xs, zero_ps_vec, _CMP_EQ_UQ);
+        __m256 ray_dir_ys_eq_zero = _mm256_cmp_ps(ray_dir_xs, zero_ps_vec, _CMP_EQ_UQ);
+        __m256 div_safe_ray_dir_xs = _mm256_blendv_ps(ray_dir_xs, one_ps_vec, ray_dir_xs_eq_zero);
+        __m256 div_safe_ray_dir_ys = _mm256_blendv_ps(ray_dir_ys, one_ps_vec, ray_dir_ys_eq_zero);
+        __m256 abs_one_over_ray_dir_xs = abs_ps(_mm256_div_ps(one_ps_vec, div_safe_ray_dir_xs));
+        __m256 abs_one_over_ray_dir_ys = abs_ps(_mm256_div_ps(one_ps_vec, div_safe_ray_dir_ys));
+        __m256 delta_dist_xs = _mm256_blendv_ps(abs_one_over_ray_dir_xs, one_e_30_vec, ray_dir_xs_eq_zero);
+        __m256 delta_dist_ys = _mm256_blendv_ps(abs_one_over_ray_dir_ys, one_e_30_vec, ray_dir_ys_eq_zero);
+        
+
+        //f32 delta_dist_xs[8], delta_dist_ys[8];
+        //for(int i = 0; i < 8; i++) {
+        //    delta_dist_xs[i] = (ray_dir_xs[i] == 0.0f ? 1e30 : (fabs(1/ray_dir_xs[i])));
+        //    delta_dist_ys[i] = (ray_dir_ys[i] == 0.0f ? 1e30 : (fabs(1/ray_dir_ys[i])));
+        //}
 
         f32 wrap_x_minus_map_x = (pos_x - map_x);
         f32 map_x_plus_one_minus_wrap_x = (map_x + (1.0 - pos_x));
@@ -2525,14 +2976,21 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
         //int step_y = (ray_dir_y < 0) ? -1 : 1;
 
         // TODO: vectorize
-        s32 step_xs[8], step_ys[8];
-        for(int i = 0; i < 8; i++) {
-            step_xs[i] = (ray_dir_xs[i] < 0.0f) ? -1 : 1;
-            step_ys[i] = (ray_dir_ys[i] < 0.0f) ? -1 : 1;
-        }
+        //s32 step_xs[8], step_ys[8];
+        //for(int i = 0; i < 8; i++) {
+        //    step_xs[i] = (ray_dir_xs[i] < 0.0f) ? -1 : 1;
+        //    step_ys[i] = (ray_dir_ys[i] < 0.0f) ? -1 : 1;
+        //}
+        __m256 ray_dir_xs_less_than_zero = _mm256_cmp_ps(ray_dir_xs, zero_ps_vec, _CMP_LT_OQ);
+        __m256 ray_dir_ys_less_than_zero = _mm256_cmp_ps(ray_dir_ys, zero_ps_vec, _CMP_LT_OQ);
+        __m256i step_xs = _mm256_blendv_epi8(one_vec, negative_one_vec, (__m256i)ray_dir_xs_less_than_zero);
+        __m256i step_ys = _mm256_blendv_epi8(one_vec, negative_one_vec, (__m256i)ray_dir_ys_less_than_zero);
 
-        f32 perp_wall_dists[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-        f32 next_perp_wall_dists[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+
+        //f32 perp_wall_dists[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        //f32 next_perp_wall_dists[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        __m256 perp_wall_dists = zero_ps_vec;
+        __m256 next_perp_wall_dists = zero_ps_vec;
         //f32 perp_wall_dist = 0;
         //f32 next_perp_wall_dist = 0;
 
@@ -2542,40 +3000,49 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
         
         // TODO: vectorize
-        f32 side_dist_xs[8], side_dist_ys[8];
-        for(int i = 0; i < 8; i++) {
-            side_dist_xs[i] = (ray_dir_xs[i] < 0.0f ? wrap_x_minus_map_x : map_x_plus_one_minus_wrap_x) * delta_dist_xs[i];
-            side_dist_ys[i] = (ray_dir_ys[i] < 0.0f ? wrap_y_minus_map_y : map_y_plus_one_minus_wrap_y) * delta_dist_ys[i];
-        }
+        //f32 side_dist_xs[8], side_dist_ys[8];
+        //for(int i = 0; i < 8; i++) {
+        //    side_dist_xs[i] = (ray_dir_xs[i] < 0.0f ? wrap_x_minus_map_x : map_x_plus_one_minus_wrap_x) * delta_dist_xs[i];
+        //    side_dist_ys[i] = (ray_dir_ys[i] < 0.0f ? wrap_y_minus_map_y : map_y_plus_one_minus_wrap_y) * delta_dist_ys[i];
+        //}
+        __m256 wrap_x_minus_map_xs = _mm256_set1_ps(wrap_x_minus_map_x);
+        __m256 wrap_y_minus_map_ys = _mm256_set1_ps(wrap_y_minus_map_y);
+        __m256 map_x_plus_one_minus_wrap_xs = _mm256_set1_ps(map_x_plus_one_minus_wrap_x);
+        __m256 map_y_plus_one_minus_wrap_ys = _mm256_set1_ps(map_y_plus_one_minus_wrap_y);
+        __m256 side_dist_xs = _mm256_mul_ps(_mm256_blendv_ps(map_x_plus_one_minus_wrap_xs, wrap_x_minus_map_xs, ray_dir_xs_less_than_zero), delta_dist_xs);
+        __m256 side_dist_ys = _mm256_mul_ps(_mm256_blendv_ps(map_y_plus_one_minus_wrap_ys, wrap_y_minus_map_ys, ray_dir_ys_less_than_zero), delta_dist_ys);
+        
 
         // TODO: vectorize
-        int any_perp_wall_dists_are_zero = 0;
-        for(int i = 0; i < 8; i++) {
-            any_perp_wall_dists_are_zero |= (perp_wall_dists[i] == 0.0f);
-        }
+        //int any_perp_wall_dists_are_zero = 0;
+        //for(int i = 0; i < 8; i++) {
+        //    any_perp_wall_dists_are_zero |= (perp_wall_dists[i] == 0.0f);
+        //}
+        int any_perp_wall_dists_are_zero = _mm256_movemask_ps(_mm256_cmp_ps(perp_wall_dists, zero_ps_vec, _CMP_EQ_UQ));
 
         while(any_perp_wall_dists_are_zero) {
             //int map_x_dx = (side_dist_x < side_dist_y) ? step_x : 0;
             //int map_y_dy = (side_dist_x < side_dist_y) ? 0 : step_y;
             
             // TODO: vectorize
-            s32 smap_x_dxs[8],smap_y_dys[8];
-            for(int i = 0; i < 8; i++) {
-                smap_x_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? step_xs[i] : 0;
-                smap_y_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0 : step_ys[i];
-            }
-            __m256i map_x_dxs = _mm256_load_si256(smap_x_dxs);
-            __m256i map_y_dys = _mm256_load_si256(smap_y_dys);
+            //s32 smap_x_dxs[8],smap_y_dys[8];
+            //for(int i = 0; i < 8; i++) {
+            //    smap_x_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? step_xs[i] : 0;
+            //    smap_y_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0 : step_ys[i];
+            //}
+            __m256 side_dist_xs_less_than_side_dist_ys = _mm256_cmp_ps(side_dist_xs, side_dist_ys, _CMP_LT_OQ);
+            __m256i map_x_dxs = _mm256_blendv_epi8(zero_vec, step_xs, (__m256i)side_dist_xs_less_than_side_dist_ys);
+            __m256i map_y_dys = _mm256_blendv_epi8(step_ys, zero_vec, (__m256i)side_dist_xs_less_than_side_dist_ys);
 
-            //perp_wall_dist = next_perp_wall_dist;
-            //next_perp_wall_dist = (side_dist_x < side_dist_y) ? side_dist_x : side_dist_y;
-            
+
             // TODO: vectorize
-            for(int i = 0; i < 8; i++) {
-                perp_wall_dists[i] = next_perp_wall_dists[i];
-                next_perp_wall_dists[i] = (side_dist_xs[i] < side_dist_ys[i]) ? side_dist_xs[i] : side_dist_ys[i];
-            }
+            //for(int i = 0; i < 8; i++) {
+            //    perp_wall_dists[i] = next_perp_wall_dists[i];
+            //    next_perp_wall_dists[i] = (side_dist_xs[i] < side_dist_ys[i]) ? side_dist_xs[i] : side_dist_ys[i];
+            //}
 
+            perp_wall_dists = next_perp_wall_dists;
+            next_perp_wall_dists = _mm256_blendv_ps(side_dist_ys, side_dist_xs, side_dist_xs_less_than_side_dist_ys);
 
 
             //f32 side_dist_dx = (side_dist_x < side_dist_y) ? delta_dist_x : 0;
@@ -2584,26 +3051,33 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             //next_side = (side_dist_x < side_dist_y) ? X_SIDE : Y_SIDE;
             
             // TODO: vectorize
-            f32 side_dist_dxs[8], side_dist_dys[8];
-            for(int i = 0; i < 8; i++) {
-                side_dist_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? delta_dist_xs[i] : 0.0f;
-                side_dist_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0.0f : delta_dist_ys[i];
-            }
+            //f32 side_dist_dxs[8], side_dist_dys[8];
+            //for(int i = 0; i < 8; i++) {
+            //    side_dist_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? delta_dist_xs[i] : 0.0f;
+            //    side_dist_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0.0f : delta_dist_ys[i];
+            //}
+            __m256 side_dist_dxs = _mm256_blendv_ps(zero_ps_vec, delta_dist_xs, side_dist_xs_less_than_side_dist_ys);
+            __m256 side_dist_dys = _mm256_blendv_ps(delta_dist_ys, zero_ps_vec, side_dist_xs_less_than_side_dist_ys);
 
             // TODO: vectorize
-            int prev_sides[8],next_sides[8];
-            for(int i = 0; i < 8; i++) {
-                prev_sides[i] = next_sides[i];
-                next_sides[i] = (side_dist_xs[i] < side_dist_ys[i]) ? X_SIDE : Y_SIDE;
-            }
+            //int prev_sides[8],next_sides[8];
+            //for(int i = 0; i < 8; i++) {
+            //    prev_sides[i] = next_sides[i];
+            //    next_sides[i] = (side_dist_xs[i] < side_dist_ys[i]) ? X_SIDE : Y_SIDE;
+            //}
+            prev_sides = next_sides;
+            next_sides = _mm256_blendv_epi8(_mm256_set1_epi32(Y_SIDE), _mm256_set1_epi32(X_SIDE), (__m256i)side_dist_xs_less_than_side_dist_ys);
 
             //side_dist_x += side_dist_dx;
             //side_dist_y += side_dist_dy;
             // TODO: vectorize
-            for(int i = 0; i < 8; i++) {
-                side_dist_xs[i] += side_dist_dxs[i];
-                side_dist_ys[i] += side_dist_dys[i];
-            }
+            
+            //for(int i = 0; i < 8; i++) {
+            //    side_dist_xs[i] += side_dist_dxs[i];
+            //    side_dist_ys[i] += side_dist_dys[i];
+            //}
+            side_dist_xs = _mm256_add_ps(side_dist_xs, side_dist_dxs);
+            side_dist_ys = _mm256_add_ps(side_dist_ys, side_dist_dys);
 
 
             //map_x += map_x_dx;
@@ -2619,64 +3093,81 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
 
             // TODO: vectorize
-            any_perp_wall_dists_are_zero = 0;
-            for(int i = 0; i < 8; i++) {
-                any_perp_wall_dists_are_zero |= (perp_wall_dists[i] == 0);
-            }
+            //any_perp_wall_dists_are_zero = 0;
+            //for(int i = 0; i < 8; i++) {
+            //    any_perp_wall_dists_are_zero |= (perp_wall_dists[i] == 0);
+            //}
+            any_perp_wall_dists_are_zero = _mm256_movemask_ps(_mm256_cmp_ps(perp_wall_dists, zero_ps_vec, _CMP_EQ_UQ));
         }
 
         //f32 invz = scale_height / perp_wall_dist;
         //f32 next_invz = scale_height / next_perp_wall_dist;
         // TODO: vectorize
-        f32 invzs[8], next_invzs[8];
-        for(int i = 0; i < 8; i++) {
-            invzs[i] = scale_height / perp_wall_dists[i];
-            next_invzs[i] = scale_height / next_perp_wall_dists[i];
-        }
+        //f32 invzs[8], next_invzs[8];
+        //for(int i = 0; i < 8; i++) {
+        //    invzs[i] = scale_height / perp_wall_dists[i];
+        //    next_invzs[i] = scale_height / next_perp_wall_dists[i];
+        //}
+        __m256 invzs = _mm256_div_ps(scale_height_vec, perp_wall_dists);
+        __m256 next_invzs = _mm256_div_ps(scale_height_vec, next_perp_wall_dists);
 
         profile_block z_step_block;
 
         //s32 max_x_steps = (ray_dir_x > 0 ? (1023-(s32)pos_x) : (((s32)pos_x))) + 1;
         //s32 max_y_steps = (ray_dir_y > 0 ? (1023-(s32)pos_y) : (((s32)pos_y))) + 1;
         // TODO: vectorize
-        s32 rem_x_steps[8],rem_y_steps[8];
-        for(int i = 0; i < 8; i++) {
-            rem_x_steps[i] = (ray_dir_xs[i] > 0.0f ? (MAP_X_SIZE - (s32)pos_x) : ((s32)pos_x)) + 1;
-            rem_y_steps[i] = (ray_dir_ys[i] > 0.0f ? (MAP_Y_SIZE - (s32)pos_y) : ((s32)pos_y)) + 1;
-        }
-
-
-
-
-        // TODO: vectorize
-        int any_perp_wall_dists_lte_max_z = 0;
-        for(int i = 0; i < 8; i++) {
-            any_perp_wall_dists_lte_max_z |= perp_wall_dists[i] <= max_z;
-        }
-
-        // TODO: vectorize
-        int any_prev_drawn_max_ys_gt_next_drawable_min_ys = 0;
-        for(int i = 0; i < 8; i++) {
-            any_prev_drawn_max_ys_gt_next_drawable_min_ys |= (prev_drawn_max_ys[i] > next_drawable_min_ys[i]);
-        }
+        
+        //s32 rem_x_steps[8],rem_y_steps[8];
+        //for(int i = 0; i < 8; i++) {
+        //    rem_x_steps[i] = (ray_dir_xs[i] > 0.0f ? (MAP_X_SIZE - (s32)pos_x) : ((s32)pos_x)) + 1;
+        //    rem_y_steps[i] = (ray_dir_ys[i] > 0.0f ? (MAP_Y_SIZE - (s32)pos_y) : ((s32)pos_y)) + 1;
+        //}
+        __m256i rem_x_steps = _mm256_add_epi32(
+            _mm256_blendv_epi8(
+                 _mm256_set1_epi32(MAP_X_SIZE - (s32)pos_x), 
+                _mm256_set1_epi32(pos_x),
+                 (__m256i)ray_dir_xs_less_than_zero), 
+            one_vec);
+        __m256i rem_y_steps = _mm256_add_epi32(
+            _mm256_blendv_epi8(
+                 _mm256_set1_epi32(MAP_Y_SIZE - (s32)pos_y), 
+                 _mm256_set1_epi32(pos_y),
+                 (__m256i)ray_dir_ys_less_than_zero), 
+            one_vec);
 
         // TODO: vectorize
-        int any_rem_x_steps_gt_zero = 0;
-        for(int i = 0; i < 8; i++) {
-            any_rem_x_steps_gt_zero |= (rem_x_steps[i] > 0);
-        }
+        //int any_perp_wall_dists_lte_max_z = 0;
+        //for(int i = 0; i < 8; i++) {
+        //    any_perp_wall_dists_lte_max_z |= perp_wall_dists[i] <= max_z;
+        //}
+        int any_perp_wall_dists_lte_max_z = _mm256_movemask_ps(_mm256_cmp_ps(perp_wall_dists, max_z_vec, _CMP_LE_OQ));
 
         // TODO: vectorize
-        int any_rem_y_steps_gt_zero = 0;
-        for(int i = 0; i < 8; i++) {
-            any_rem_y_steps_gt_zero |= (rem_y_steps[i] > 0);
-        }
+        //int any_prev_drawn_max_ys_gt_next_drawable_min_ys = 0;
+        //for(int i = 0; i < 8; i++) {
+        //    any_prev_drawn_max_ys_gt_next_drawable_min_ys |= (prev_drawn_max_ys[i] > next_drawable_min_ys[i]);
+        //}
+        int any_prev_drawn_max_ys_gt_next_drawable_min_ys = _mm256_movemask_epi8(_mm256_cmpgt_epi32(prev_drawn_max_ys, next_drawable_min_ys));
+
+        // TODO: vectorize
+        //int any_rem_x_steps_gt_zero = 0;
+        //for(int i = 0; i < 8; i++) {
+        //    any_rem_x_steps_gt_zero |= (rem_x_steps[i] > 0);
+        //}
+        int any_rem_x_steps_gt_zero = _mm256_movemask_epi8(_mm256_cmpgt_epi32(rem_x_steps, zero_vec));
+
+        // TODO: vectorize
+        //int any_rem_y_steps_gt_zero = 0;
+        //for(int i = 0; i < 8; i++) {
+        //    any_rem_y_steps_gt_zero |= (rem_y_steps[i] > 0);
+        //}
+        int any_rem_y_steps_gt_zero = _mm256_movemask_epi8(_mm256_cmpgt_epi32(rem_y_steps, zero_vec));
 
         while(any_perp_wall_dists_lte_max_z && any_prev_drawn_max_ys_gt_next_drawable_min_ys && any_rem_x_steps_gt_zero && any_rem_y_steps_gt_zero) {
 
-            u32 prepared_combined_world_map_poses[8];
+            u32 scalar_prepared_combined_world_map_poses[8] __attribute__ ((aligned (32)));
             _mm256_store_si256(
-                prepared_combined_world_map_poses,
+                (__m256i*)scalar_prepared_combined_world_map_poses,
                 _mm256_or_si256(
                     _mm256_slli_epi32(map_xs, 19),
                     _mm256_slli_epi32(map_ys, 8)
@@ -2685,14 +3176,17 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
                    
             
-            s32 smap_x_dxs[8];
-            s32 smap_y_dys[8];
-            for(int i = 0; i < 8; i++) {
-                smap_x_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? step_xs[i] : 0;
-                smap_y_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0 : step_ys[i];
-            }
-            __m256i map_x_dxs = _mm256_load_si256(smap_x_dxs);
-            __m256i map_y_dys = _mm256_load_si256(smap_y_dys);
+            __m256 side_dist_xs_less_than_side_dist_ys = _mm256_cmp_ps(side_dist_xs, side_dist_ys, _CMP_LT_OQ);
+            __m256i map_x_dxs = _mm256_blendv_epi8(zero_vec, step_xs, (__m256i)side_dist_xs_less_than_side_dist_ys);
+            __m256i map_y_dys = _mm256_blendv_epi8(step_ys, zero_vec, (__m256i)side_dist_xs_less_than_side_dist_ys);
+            //s32 smap_x_dxs[8];
+            //s32 smap_y_dys[8];
+            //for(int i = 0; i < 8; i++) {
+            //    smap_x_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? step_xs[i] : 0;
+            //    smap_y_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0 : step_ys[i];
+            //}
+            //__m256i map_x_dxs = _mm256_load_si256(smap_x_dxs);
+            //__m256i map_y_dys = _mm256_load_si256(smap_y_dys);
             //__m256i map_x_dxs = _mm256_blendv_epi8(
             //    zero_vec,
             //    _mm256_load_si256(step_xs),
@@ -2712,10 +3206,13 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             //perp_wall_dist = next_perp_wall_dist;
             //next_perp_wall_dist = (side_dist_x < side_dist_y) ? side_dist_x : side_dist_y;
             // TODO: vectorize
-            for(int i = 0; i < 8; i++) {
-                perp_wall_dists[i] = next_perp_wall_dists[i];
-                next_perp_wall_dists[i] = (side_dist_xs[i] < side_dist_ys[i]) ? side_dist_xs[i] : side_dist_ys[i];
-            }
+            //for(int i = 0; i < 8; i++) {
+            //    perp_wall_dists[i] = next_perp_wall_dists[i];
+            //    next_perp_wall_dists[i] = (side_dist_xs[i] < side_dist_ys[i]) ? side_dist_xs[i] : side_dist_ys[i];
+            //}
+            perp_wall_dists = next_perp_wall_dists;
+            next_perp_wall_dists = _mm256_blendv_ps(side_dist_ys, side_dist_xs, side_dist_xs_less_than_side_dist_ys);
+
 
 
 
@@ -2728,33 +3225,42 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
             
             // TODO: vectorize
-            f32 side_dist_dxs[8], side_dist_dys[8];
-            for(int i = 0; i < 8; i++) {
-                side_dist_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? delta_dist_xs[i] : 0.0f;
-                side_dist_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0.0f : delta_dist_ys[i];
-            }
+            //f32 side_dist_dxs[8], side_dist_dys[8];
+            //for(int i = 0; i < 8; i++) {
+            //    side_dist_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? delta_dist_xs[i] : 0.0f;
+            //    side_dist_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0.0f : delta_dist_ys[i];
+            //}
+            __m256 side_dist_dxs = _mm256_blendv_ps(zero_ps_vec, delta_dist_xs, side_dist_xs_less_than_side_dist_ys);
+            __m256 side_dist_dys = _mm256_blendv_ps(delta_dist_ys, zero_ps_vec, side_dist_xs_less_than_side_dist_ys);
 
             // TODO: vectorize
-            int prev_sides[8], next_sides[8];
-            for(int i = 0; i < 8; i++) {
-                prev_sides[i] = next_sides[i];
-                next_sides[i] = (side_dist_xs[i] < side_dist_ys[i]) ? X_SIDE : Y_SIDE;
-            }
+            //int prev_sides[8], next_sides[8];
+            //for(int i = 0; i < 8; i++) {
+            //    prev_sides[i] = next_sides[i];
+            //    next_sides[i] = (side_dist_xs[i] < side_dist_ys[i]) ? X_SIDE : Y_SIDE;
+            //}
+            prev_sides = next_sides;
+            next_sides = _mm256_blendv_epi8(_mm256_set1_epi32(Y_SIDE), _mm256_set1_epi32(X_SIDE), (__m256i)side_dist_xs_less_than_side_dist_ys);
+
 
             // TODO: vectorize
-            for(int i = 0; i < 8; i++) {
-                rem_x_steps[i] -= (side_dist_xs[i] < side_dist_ys[i]) ? 1 : 0;
-                rem_y_steps[i] -= (side_dist_xs[i] < side_dist_ys[i]) ? 0 : 1;
-            }
+            rem_x_steps = _mm256_sub_epi32(rem_x_steps, _mm256_blendv_epi8(zero_vec, one_vec, (__m256i)side_dist_xs_less_than_side_dist_ys));
+            rem_y_steps = _mm256_sub_epi32(rem_y_steps, _mm256_blendv_epi8(one_vec, zero_vec, (__m256i)side_dist_xs_less_than_side_dist_ys));
+            //for(int i = 0; i < 8; i++) {
+            //    rem_x_steps[i] -= (side_dist_xs[i] < side_dist_ys[i]) ? 1 : 0;
+            //    rem_y_steps[i] -= (side_dist_xs[i] < side_dist_ys[i]) ? 0 : 1;
+            //}
 
 
             //side_dist_x += side_dist_dx;
             //side_dist_y += side_dist_dy;
             // TODO: vectorize
-            for(int i = 0; i < 8; i++) {
-                side_dist_xs[i] += side_dist_dxs[i];
-                side_dist_ys[i] += side_dist_dys[i];
-            }
+            //for(int i = 0; i < 8; i++) {
+            //    side_dist_xs[i] += side_dist_dxs[i];
+            //    side_dist_ys[i] += side_dist_dys[i];
+            //}
+            side_dist_xs = _mm256_add_ps(side_dist_xs, side_dist_dxs);
+            side_dist_ys = _mm256_add_ps(side_dist_ys, side_dist_dys);
 
 
             //s32 next_map_x = map_x + map_x_dx;
@@ -2788,7 +3294,7 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                 )
             );
             int any_inside_bounds = _mm256_movemask_epi8(inside_map_bounds_vec);
-            _mm256_store_si256(inside_map_bounds, inside_map_bounds_vec);
+            _mm256_store_si256((__m256i*)inside_map_bounds, inside_map_bounds_vec);
             //for(int i = 0; i < 8; i++) {
                 //inside_map_bounds[i] = (map_xs[i] >= 0) && (map_xs[i] < 1024) && (map_ys[i] >= 0) && (map_ys[i] < 1024);
                 //any_inside_bounds |= inside_map_bounds[i];
@@ -2802,9 +3308,10 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             //next_invz = scale_height / next_perp_wall_dist;
             //u32 voxelmap_idx = get_voxelmap_idx(map_x, map_y);
             // TODO: vectorize
-            for(int i = 0; i < 8; i++) {
-                next_invzs[i] = scale_height / next_perp_wall_dists[i];
-            }
+            //for(int i = 0; i < 8; i++) {
+            //    next_invzs[i] = scale_height / next_perp_wall_dists[i];
+            //}
+            next_invzs = _mm256_div_ps(scale_height_vec, next_perp_wall_dists);
             
             __m256i voxelmap_idxs = get_voxelmap_idx_256(
                 map_xs, map_ys
@@ -2832,7 +3339,7 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             //for(int i = 0; i < 8; i++) {
             //    headers[i] = &columns_header_data[voxelmap_idxs[i]];
             //}
-            __m256i headers = _mm256_i32gather_epi32(columns_header_data, voxelmap_idxs, 2);
+            __m256i headers = _mm256_i32gather_epi32((const int*)columns_header_data, voxelmap_idxs, 2);
             __m256i header_top_ys = _mm256_and_si256(_mm256_set1_epi32(0xFF), headers);
             __m256i header_num_runs = _mm256_and_si256(_mm256_set1_epi32(0xFF), _mm256_srli_epi32(headers, 8));
 
@@ -2871,16 +3378,12 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             //    relative_tops_of_cols[i] = height - (255 - top_ys[i]);
             //}
 
-            __m256i prev_drawn_max_ys_vec = _mm256_load_si256(prev_drawn_max_ys);
-
             __m256 relative_tops_of_cols = _mm256_sub_ps(height_vec, 
                                                 _mm256_cvtepi32_ps(
                                                     _mm256_sub_epi32(two_fifty_five_vec, header_top_ys)));
 
             __m256 relative_tops_of_cols_lt_zero =  _mm256_cmp_ps(relative_tops_of_cols, zero_ps_vec, _CMP_LT_OQ);
-            __m256 invz_vec = _mm256_load_ps(invzs);
-            __m256 next_invz_vec = _mm256_load_ps(next_invzs);
-            __m256 col_top_invzs = _mm256_blendv_ps(next_invz_vec, invz_vec, relative_tops_of_cols_lt_zero);
+            __m256 col_top_invzs = _mm256_blendv_ps(next_invzs, invzs, relative_tops_of_cols_lt_zero);
 
             __m256 float_top_of_col_projected_heights = _mm256_mul_ps(relative_tops_of_cols, col_top_invzs);
             __m256i int_top_of_col_projected_heights = _mm256_add_epi32(
@@ -2890,7 +3393,7 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                         pitch_vec);
 
             int any_top_of_col_projected_heights_lt_prev_drawn_max_y = _mm256_movemask_epi8(
-                _mm256_cmpgt_epi32(prev_drawn_max_ys_vec, int_top_of_col_projected_heights)
+                _mm256_cmpgt_epi32(prev_drawn_max_ys, int_top_of_col_projected_heights)
             );
             if(!any_top_of_col_projected_heights_lt_prev_drawn_max_y) {
                 goto next_z_step;
@@ -2923,51 +3426,53 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             //    goto next_z_step;
             //}
             // TODO: vectorize
-            f32 relative_bots_of_cols[8];
-            f32 col_bot_invzs[8];
-            f32 float_bot_of_col_projected_heights[8];
-            s32 int_bot_of_col_projected_heights[8];
-            for(int i = 0; i < 8; i++) {
-                relative_bots_of_cols[i] = height - ( 255 - cur_map_max_height);
-            }
-            for(int i = 0; i < 8; i++) {
-                col_bot_invzs[i] = (relative_bots_of_cols[i] < 0 ? next_invzs[i] : invzs[i]);
-            }
-            for(int i = 0; i < 8; i++) {
-                float_bot_of_col_projected_heights[i] = relative_bots_of_cols[i] * col_bot_invzs[i];
-            }
-            for(int i = 0; i < 8; i++) {
-                int_bot_of_col_projected_heights[i] = floor(float_bot_of_col_projected_heights[i]) + pitch;
-            }
-            int all_bot_of_col_projected_heights_lt_next_drawable_min_y = 1;
-            for(int i = 0; i < 8; i++) {
-                all_bot_of_col_projected_heights_lt_next_drawable_min_y &= (int_bot_of_col_projected_heights[i] < next_drawable_min_ys[i]);
-            }
-            if(all_bot_of_col_projected_heights_lt_next_drawable_min_y) {
+            //f32 relative_bots_of_cols[8];
+            //f32 col_bot_invzs[8];
+            //f32 float_bot_of_col_projected_heights[8];
+            //s32 int_bot_of_col_projected_heights[8];
+            //for(int i = 0; i < 8; i++) {
+            //    relative_bots_of_cols[i] = height - ( 255 - cur_map_max_height);
+            //}
+            __m256 relative_bots_of_cols = _mm256_sub_ps(height_vec, 
+                                                _mm256_cvtepi32_ps(
+                                                    _mm256_sub_epi32(two_fifty_five_vec, cur_map_max_height_vec)));
+            //for(int i = 0; i < 8; i++) {
+            //    col_bot_invzs[i] = (relative_bots_of_cols[i] < 0 ? next_invzs[i] : invzs[i]);
+            //}
+            __m256 relative_bots_of_cols_lt_zero =  _mm256_cmp_ps(relative_bots_of_cols, zero_ps_vec, _CMP_LT_OQ);
+            __m256 col_bot_invzs = _mm256_blendv_ps(next_invzs, invzs, relative_bots_of_cols_lt_zero);
+            //for(int i = 0; i < 8; i++) {
+            //    float_bot_of_col_projected_heights[i] = relative_bots_of_cols[i] * col_bot_invzs[i];
+            //}
+            __m256 float_bot_of_col_projected_heights = _mm256_mul_ps(relative_bots_of_cols, col_bot_invzs);
+            __m256i int_bot_of_col_projected_heights = _mm256_add_epi32(
+                            _mm256_cvtps_epi32(
+                                _mm256_floor_ps(float_bot_of_col_projected_heights)
+                            ), 
+                        pitch_vec);
+
+            //for(int i = 0; i < 8; i++) {
+            //    int_bot_of_col_projected_heights[i] = floor(float_bot_of_col_projected_heights[i]) + pitch;
+            //}
+            //int all_bot_of_col_projected_heights_lt_next_drawable_min_y = 1;
+            //for(int i = 0; i < 8; i++) {
+            //    all_bot_of_col_projected_heights_lt_next_drawable_min_y &= (int_bot_of_col_projected_heights[i] < next_drawable_min_ys[i]);
+            //}
+            
+            int any_bot_of_col_projected_heights_gte_next_drawable_min_y = _mm256_movemask_epi8(
+                _mm256_or_si256(
+                    _mm256_cmpgt_epi32(prev_drawn_max_ys, int_top_of_col_projected_heights),
+                    _mm256_cmpeq_epi32(prev_drawn_max_ys, int_top_of_col_projected_heights)
+                )
+            );
+
+            if(!any_bot_of_col_projected_heights_gte_next_drawable_min_y) {
                 goto next_z_step;
             }
 
 
 
 
-            //span* span_info = columns_runs_data[voxelmap_idx].runs_info;
-            //u8 num_runs = header->num_runs;
-            // TODO: vectorize
-            span* span_infos[8];
-            s32 col_num_runs[8] __attribute__ ((aligned (32)));
-            _mm256_store_si256((__m256i*)col_num_runs, header_num_runs);
-            // load voxelmap indexes
-            // load 
-
-            u32 scalar_voxelmap_idxs[8] __attribute__ ((aligned (32)));
-            _mm256_store_si256((__m256i*)scalar_voxelmap_idxs, voxelmap_idxs);
-
-            for(int i = 0; i < 8; i++) {
-                span_infos[i] = columns_runs_data[scalar_voxelmap_idxs[i]].runs_info;
-            }
-            //for(int i = 0; i < 8; i++) {
-            //    col_num_runs[i] = headers[i]->num_runs;
-            //}
           
 
 #define DRAW_CHUNK_FACE(top, bot, face_norm_1, face_norm_2, voxel_color_idx) {              \
@@ -3127,66 +3632,55 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     }   \
 }           
   
-            
-            
-            //int chunk_top = -1;
-            
-            // we have to search to find the middle chunk.
-            // then draw up to the minimum chunk
-            // and draw down to the maximum chunk
-            // but i am going to ignore that for now
+  
+            //span* span_info = columns_runs_data[voxelmap_idx].runs_info;
+            //u8 num_runs = header->num_runs;
+            // TODO: vectorize
+            span* span_infos[8] __attribute__ ((aligned (32)));
+            s32 scalar_num_runs[8] __attribute__ ((aligned (32)));
+            _mm256_store_si256((__m256i*)scalar_num_runs, header_num_runs);
+            // load voxelmap indexes
+            // load 
 
-            // find mid point
-            // draw up from there
-            // draw down from there
+            u32 scalar_voxelmap_idxs[8] __attribute__ ((aligned (32)));
+            _mm256_store_si256((__m256i*)scalar_voxelmap_idxs, voxelmap_idxs);
 
-        #if 0
-            int min_on_screen_y = max_y+1;
-            int max_on_screen_y = min_y-1;
             for(int i = 0; i < 8; i++) {
-                max_on_screen_y = max(max_on_screen_y, int_bot_of_col_projected_heights[i]);
+                span_infos[i] = columns_runs_data[scalar_voxelmap_idxs[i]].runs_info;
             }
-            for(int i = 0; i < 8; i++) {
-                min_on_screen_y = min(min_on_screen_y, int_bot_of_col_projected_heights[i]);
-            }
-            int cur_runs[8] = {0,0,0,0,0,0,0,0};
 
-            for(int y = min_on_screen_y; y <= max_on_screen_y; y++) {
-                u8 pix_drawn = get_occlusion_byte(x, y);
-                int has_remaining_runs[8];
-                for(int i = 0; i < 8; i++) {
-                    has_remaining_runs[i] = (cur_runs[i] < col_num_runs[i]);
-                }
-                int run_tops[8], run_bots[8];
-                for(int i = 0; i < 8; i++) {
-                    run_tops[i] = span_infos[i][cur_runs[i]].
-                }
-                int run_projected_tops[8];
-                int run_projected_bots[8];
-                for(int i = 0; i < 8; i++) {
-                    f32 relative_bot = height-run_
-                }
-                int inside_cur_run[8];
-                for(int i = 0; i < 8; i++) {
-                    inside_cur_run[i] = (y >= run_projected_tops && y < run_projected_bots);
 
-                }
-            }
-        #else
+            //for(int i = 0; i < 8; i++) {
+            //    col_num_runs[i] = headers[i]->num_runs;
+            //}
+
+            f32 scalar_invzs[8] __attribute__ ((aligned (32))); 
+            _mm256_store_ps(scalar_invzs, invzs);
+            f32 scalar_next_invzs[8] __attribute__ ((aligned (32))); 
+            _mm256_store_ps(scalar_next_invzs, next_invzs);
+            
+            
+            s32 scalar_prev_drawn_max_ys[8] __attribute__ ((aligned (32)));
+            s32 scalar_next_drawable_min_ys[8] __attribute__ ((aligned (32)));
+            _mm256_store_si256((__m256i*)scalar_prev_drawn_max_ys, prev_drawn_max_ys);
+            _mm256_store_si256((__m256i*)scalar_next_drawable_min_ys, next_drawable_min_ys);
+
             int old_x = x;
+            //__mm256_no
             for(int i = 0; i < 8; i++) {
                 if(!inside_map_bounds[i]) { continue; }
                 if(prev_drawn_max_ys[i] <= next_drawable_min_ys[i]) { continue; }
                 //if(!any_prev_drawn_max_ys_gt_next_drawable_min_ys)
                 int x = old_x + i;
                 u32 voxelmap_idx = scalar_voxelmap_idxs[i];
+
                 span* span_info = span_infos[i];
-                f32 invz = invzs[i];
-                f32 next_invz = next_invzs[i];
-                f32 next_drawable_min_y = next_drawable_min_ys[i];
-                f32 prev_drawn_max_y = prev_drawn_max_ys[i];
-                u32 prepared_combined_world_map_pos = prepared_combined_world_map_poses[i];
-                int num_runs = col_num_runs[i];
+                f32 invz = scalar_invzs[i];
+                f32 next_invz = scalar_next_invzs[i];
+                f32 next_drawable_min_y = scalar_next_drawable_min_ys[i];
+                f32 prev_drawn_max_y = scalar_prev_drawn_max_ys[i];
+                u32 prepared_combined_world_map_pos = scalar_prepared_combined_world_map_poses[i];
+                int num_runs = scalar_num_runs[i];
 
 
                 u32* top_of_col_color_ptr = columns_colors_data[voxelmap_idx].colors;
@@ -3263,12 +3757,13 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                     }
                 }
 
-                next_drawable_min_ys[i] = next_drawable_min_y;
-                prev_drawn_max_ys[i] = prev_drawn_max_y;
+                scalar_next_drawable_min_ys[i] = next_drawable_min_y;
+                scalar_prev_drawn_max_ys[i] = prev_drawn_max_y;
             }
             x = old_x;
-        #endif 
-        
+            next_drawable_min_ys = _mm256_load_si256((__m256i*)scalar_next_drawable_min_ys);
+            prev_drawn_max_ys = _mm256_load_si256((__m256i*)scalar_prev_drawn_max_ys);
+
         next_z_step:;
             //map_x = next_map_x;
             //map_y = next_map_y;
@@ -3282,46 +3777,39 @@ void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             //for(int i = 0; i < 8; i++) {
             //    map_ys[i] = next_map_ys[i];
             //}
-            for(int i = 0; i < 8; i++) {
-                invzs[i] = next_invzs[i];
-            }
+            //for(int i = 0; i < 8; i++) {
+            //    invzs[i] = next_invzs[i];
+            //}
+            invzs = next_invzs;
 
             // TODO: vectorize
-            any_perp_wall_dists_lte_max_z = 0;
-            for(int i = 0; i < 8; i++) {
-                any_perp_wall_dists_lte_max_z |= perp_wall_dists[i] <= max_z;
-            }
+            any_perp_wall_dists_lte_max_z = _mm256_movemask_ps(_mm256_cmp_ps(perp_wall_dists, max_z_vec, _CMP_LE_OQ));
+            //for(int i = 0; i < 8; i++) {
+            //    any_perp_wall_dists_lte_max_z |= perp_wall_dists[i] <= max_z;
+            //}
 
             // TODO: vectorize
-            any_prev_drawn_max_ys_gt_next_drawable_min_ys = 0;
-            for(int i = 0; i < 8; i++) {
-                any_prev_drawn_max_ys_gt_next_drawable_min_ys |= (prev_drawn_max_ys[i] > next_drawable_min_ys[i]);
-            }
+            any_prev_drawn_max_ys_gt_next_drawable_min_ys = _mm256_movemask_epi8(_mm256_cmpgt_epi32(prev_drawn_max_ys, next_drawable_min_ys));
+            //for(int i = 0; i < 8; i++) {
+            //    any_prev_drawn_max_ys_gt_next_drawable_min_ys |= (prev_drawn_max_ys[i] > next_drawable_min_ys[i]);
+            //}
 
             // TODO: vectorize
-            any_rem_x_steps_gt_zero = 0;
-            for(int i = 0; i < 8; i++) {
-                any_rem_x_steps_gt_zero |= (rem_x_steps[i] > 0);
-            }
+            any_rem_x_steps_gt_zero = _mm256_movemask_epi8(_mm256_cmpgt_epi32(rem_x_steps, zero_vec));
+            //for(int i = 0; i < 8; i++) {
+            //    any_rem_x_steps_gt_zero |= (rem_x_steps[i] > 0);
+            //}
 
             // TODO: vectorize
-            any_rem_y_steps_gt_zero = 0;
-            for(int i = 0; i < 8; i++) {
-                any_rem_y_steps_gt_zero |= (rem_y_steps[i] > 0);
-            }
+            any_rem_y_steps_gt_zero = _mm256_movemask_epi8(_mm256_cmpgt_epi32(rem_y_steps, zero_vec));
+            //for(int i = 0; i < 8; i++) {
+            //    any_rem_y_steps_gt_zero |= (rem_y_steps[i] > 0);
+            //}
 
         }
 
-        //printf("steps: %i\n", steps);
-        // TODO: vectorize
-        for(int i = 0; i < 8; i++) {
-            xs[i] += 8;
-        }
+        xs = _mm256_add_epi32(xs, dxs_vec);
         
-        // TODO: vectorize
-        //for(int i = 0; i < 8; i++) {
-        //    //camera_space_xs[i] += camera_space_x_per_8_x;
-        //}
 
 
 

@@ -57,6 +57,14 @@ typedef struct {
     span runs_info[128];
 } column_runs;
 
+// 1024 -> 10 bits
+// 1024 -> 10 bits
+// 128 -> 7 bits
+// 27 bits
+
+
+// sizeof(column_runs)
+
 int cur_map_max_height; // usually 63 but not always
 
 column_header* columns_header_data;//[1024*1024];
@@ -87,7 +95,8 @@ void allocate_map_data() {
     map_data_allocated = 1;
 }
 
-#include "libmorton/morton_BMI.h"
+
+
 
 u32 get_voxelmap_idx(s32 x, s32 y) {
     //return m2D_e_BMI(x, y);
@@ -827,7 +836,7 @@ void light_map(int min_x, int min_y, int max_x, int max_y) {
                                 }
                             }
                         }
-                    #elif 0
+                    #else 
                         // slow version, ~10 seconds for radius of 4
                         for(int yy = -AMBIENT_OCCLUSION_RADIUS; yy <= AMBIENT_OCCLUSION_RADIUS; yy++) {
                             int ty = y+yy;
