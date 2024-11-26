@@ -55,6 +55,11 @@ Olivec_Canvas vc_render(double dt);
 static SDL_Texture *vc_sdl_texture = NULL;
 static size_t vc_sdl_internal_width = 0;
 static size_t vc_sdl_internal_height = 0;
+static size_t vc_sdl_external_width = 0;
+static size_t vc_sdl_external_height = 0;
+
+static SDL_Window *window = NULL;
+static SDL_Renderer *renderer = NULL;
 
 static bool vc_sdl_resize_texture(SDL_Renderer *renderer, size_t new_width, size_t new_height) {
     printf("resizing sdl framebuffer, in hardware, texture is %i, %i\n", new_width, new_height);
@@ -64,6 +69,27 @@ static bool vc_sdl_resize_texture(SDL_Renderer *renderer, size_t new_width, size
     vc_sdl_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, vc_sdl_internal_width, vc_sdl_internal_height);
     if (vc_sdl_texture == NULL) return false;
     return true;
+}
+
+void* vc_sdl_request_pixel_buffer(size_t width, size_t height) {
+    if (width != vc_sdl_internal_width || height != vc_sdl_internal_height) {
+        if (!vc_sdl_resize_texture(renderer, width, height)) {
+            fprintf(stderr, "Error resizing texture\n");
+            exit(1);
+        }
+    }
+    SDL_Rect window_rect = {0, 0, vc_sdl_internal_width, vc_sdl_internal_height};
+    void *pixels_dst;
+    int pitch;
+    if (SDL_LockTexture(vc_sdl_texture, &window_rect, &pixels_dst, &pitch) < 0) {
+        fprintf(stderr, "SDL ERROR: %s\n", SDL_GetError());
+        exit(1);
+    }
+    return pixels_dst;
+}
+
+void vc_sdl_release_pixel_buffer() {
+    SDL_UnlockTexture(vc_sdl_texture);
 }
 
 void handle_keydown(SDL_KeyboardEvent key);
@@ -76,12 +102,11 @@ double GetTicks() {
     return (double) ts.tv_sec + ts.tv_nsec / 1000000000.0;
 }
 
+
 int main(int argc, char** argv)
 {
     int result = 0;
 
-    SDL_Window *window = NULL;
-    SDL_Renderer *renderer = NULL;
 
     {
         if (SDL_Init(SDL_INIT_VIDEO) < 0) return_defer(1);
@@ -172,21 +197,12 @@ int main(int argc, char** argv)
                 Olivec_Canvas oc_src = vc_render(double_dt);
                 size_t output_width = oc_src.width*oc_src.scale;
                 size_t output_height = oc_src.height*oc_src.scale;
-                if (oc_src.width != vc_sdl_internal_width || oc_src.height != vc_sdl_internal_height) {
-                    if (!vc_sdl_resize_texture(renderer, oc_src.width, oc_src.height)) return_defer(1);
+                if (output_width != vc_sdl_external_width || output_height != vc_sdl_external_height) {
+                    vc_sdl_external_width = output_width;
+                    vc_sdl_external_height = output_height;
                     SDL_SetWindowSize(window, output_width, output_height);
-                    window_rect.w = vc_sdl_internal_width;
-                    window_rect.h = vc_sdl_internal_height;
                 }
-                void *pixels_dst;
-                int pitch;
-                if (SDL_LockTexture(vc_sdl_texture, &window_rect, &pixels_dst, &pitch) < 0) return_defer(1);
-                for (size_t y = 0; y < vc_sdl_internal_height; ++y) {
-                    // TODO: it would be cool if Olivec_Canvas supported pitch in bytes instead of pixels
-                    // It would be more flexible and we could draw on the locked texture memory directly
-                    memcpy((char*)pixels_dst + y*pitch, oc_src.pixels + y*vc_sdl_internal_width, vc_sdl_internal_width*sizeof(uint32_t));
-                }
-                SDL_UnlockTexture(vc_sdl_texture);
+
             }
 
             // Display the texture

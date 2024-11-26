@@ -1024,10 +1024,10 @@ void setup_internal_render_buffers() {
     }
 
 
-    pixels = realloc(pixels, sizeof(u32)*OUTPUT_WIDTH*OUTPUT_HEIGHT+32);
-    while(((intptr_t)pixels)&0b11111) {
-        pixels++;
-    }
+    //pixels = realloc(pixels, sizeof(u32)*OUTPUT_WIDTH*OUTPUT_HEIGHT+32);
+    //while(((intptr_t)pixels)&0b11111) {
+    //    pixels++;
+    //}
     //}
 
     num_render_size_bits = LOG2(render_size);
@@ -1334,6 +1334,7 @@ Olivec_Canvas vc_render(double dt) {
     }
 
 
+    pixels = vc_sdl_request_pixel_buffer(render_width, render_height);
 
     if(!setup_render_size) {
         printf("setting up render buffer\n");
@@ -1676,6 +1677,8 @@ Olivec_Canvas vc_render(double dt) {
             wait_for_render_pool_to_finish(&rp);
         }   
     }
+    vc_sdl_release_pixel_buffer();
+
     double end_light = GetTicks();
 
     int mouse_off_x = (cur_mouse_x - (OUTPUT_WIDTH/2))/(1<<double_pixels);
