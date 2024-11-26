@@ -24,12 +24,12 @@
 // normally 12 :)
 #define MAX_NUM_THREADS 12
 #define NUM_LIGHT_MAP_THREADS 12
-#define NUM_RAYCAST_THREADS 1
+#define NUM_RAYCAST_THREADS 12
 #define NUM_ROTATE_LIGHT_AND_BLEND_THREADS 1
 #else
 #define MAX_NUM_THREADS 12
 #define NUM_LIGHT_MAP_THREADS 12
-#define NUM_RAYCAST_THREADS 1
+#define NUM_RAYCAST_THREADS 12
 #define NUM_ROTATE_LIGHT_AND_BLEND_THREADS 12
 #endif
 
@@ -457,7 +457,7 @@ void handle_input(f32 dt) {
     int knee_height = 2;
     int eye_height = 4;
 
-    if(gravmode && falling) {
+    if(0) { //gravmode && falling) {
         int collide_z = 0;
         f32 contact_point = pos_z+eye_height;
         f32 new_world_pos_z = contact_point+.05*dt;
@@ -1779,7 +1779,7 @@ Olivec_Canvas vc_render(double dt) {
         DEBUG_PRINT_TEXT("amb. occlusion: %s", ambient_occlusion ? "enabled" : "disabled");
         DEBUG_PRINT_TEXT("fog:            %s", fogmode ? "enabled" : "disabled");
         DEBUG_PRINT_TEXT("transparency:   %s", transparency ? "enabled" : "disabled");
-        DEBUG_PRINT_TEXT("render mode:    %s", render_6dof ? "6DOF" : "5DOF");
+        //DEBUG_PRINT_TEXT("render mode:    %s", render_6dof ? "6DOF" : "5DOF");
         DEBUG_PRINT_TEXT("view mode:      %s", view_mode_strs[view]);
         DEBUG_PRINT_TEXT("render resolution: %ix%i", max_x-min_x, (max_y+1)-min_y);
         DEBUG_PRINT_TEXT("output resolution: %ix%i", OUTPUT_WIDTH, OUTPUT_HEIGHT);
