@@ -20,7 +20,18 @@
 #define PI 3.14159265359
 
 #define PROFILER 0
-#define NUM_THREADS 8
+#ifdef DEBUG
+// normally 12 :)
+#define MAX_NUM_THREADS 12
+#define NUM_LIGHT_MAP_THREADS 12
+#define NUM_RAYCAST_THREADS 1
+#define NUM_ROTATE_LIGHT_AND_BLEND_THREADS 1
+#else
+#define MAX_NUM_THREADS 12
+#define NUM_LIGHT_MAP_THREADS 12
+#define NUM_RAYCAST_THREADS 12
+#define NUM_ROTATE_LIGHT_AND_BLEND_THREADS 12
+#endif
 
 #include "selectable_profiler.c"
 #include <SDL2/SDL.h>
@@ -32,12 +43,14 @@ u32 background_color = DAY_BACKGROUND_COLOR;
 f32 amb_light_factor = .4;
 
 
-u32 render_size = 0;
+s32 render_size = 0;
 
 
+//int output_width = 1920;
+//int output_height = 1080;
 
-#define OUTPUT_WIDTH  1920
-#define OUTPUT_HEIGHT 1080
+//#define OUTPUT_WIDTH  1920
+//#define OUTPUT_HEIGHT 1080
 
 #define DEFAULT_VOXEL_COLOR (0x002F6B | (0b11<<24))
 
@@ -96,10 +109,12 @@ static __m256i get_swizzled_map_idx_256(__m256i x, __m256i y) {
 
 }
 
-f32 pos_x = 0.0;
-f32 pos_y = 0.0;
-f32 dir_x = 1;
-f32 dir_y = 0.0;
+f32 pos_x = 6.52f;
+f32 pos_y = 16.23f;
+f32 dir_x = 0.373f;
+f32 dir_y = 0.927f;
+f32 pos_z = 15.0f;
+//static f32 height = 240.0;
 
 float deg_to_rad(float degrees) {
     return degrees * PI / 180.0;
@@ -108,9 +123,8 @@ float deg_to_rad(float degrees) {
 f32 desired_fov_degrees = 120;
 
 
-f32 plane_x = 0.0;
-f32 plane_y;// = -1.20;
-static f32 height = 200.0;
+f32 plane_x = 1.606f;// = 0.0;
+f32 plane_y = -0.646255f;// = -1.20;
 
 static int plane_parameters_setup = 0;
 
@@ -201,15 +215,22 @@ static int ambient_occlusion = 1;
 static int vectorized_rendering = 0;
 
 static int view = VIEW_STANDARD;
-static int gravmode = 0;
+static int gravmode = 1;
 
-static int debug = 0;
+static int double_pixels = 2;
 
-static int double_pixels = 1;
 
-int render_width = OUTPUT_WIDTH/2;   
-int render_height = OUTPUT_HEIGHT/2;
-f32 aspect_ratio = (OUTPUT_WIDTH/2.0)/(OUTPUT_HEIGHT/2.0);
+const int output_widths[] = {2560,1920,1280,1024};
+const int output_heights[] = {1440,1080,720,768};
+
+int cur_output_size_idx = 2;
+
+#define OUTPUT_WIDTH (output_widths[cur_output_size_idx])
+#define OUTPUT_HEIGHT (output_heights[cur_output_size_idx])
+
+int render_width = 1280/4;//1920/2; 
+int render_height = 720/4;//1080/2;
+f32 aspect_ratio = (1280/2.0)/(720/2.0); //(1920/2.0)/(1080/2.0);
 
 static int swizzled = 0;
 static int setup_render_size = 0;
@@ -236,25 +257,26 @@ typedef struct {
     PTP_WORK_CALLBACK func;
     raw_render_func raw_func;
     thread_params *parms;
-} render_pool;
+} job_pool;
 
-void start_pool(thread_pool* tp, render_pool* job_pool) {
-    for(int i = 0; i < job_pool->num_jobs; i++) {
-        if(NUM_THREADS > 1) {
-            thread_pool_add_work(tp, job_pool->func, (void*)&job_pool->parms[i]);
-        } else {        
-            // non-threading
-            job_pool->raw_func(
-                job_pool->parms[i].min_x, 
-                job_pool->parms[i].min_y,
-                job_pool->parms[i].max_x,
-                job_pool->parms[i].max_y
-            );
+void start_pool(thread_pool* tp, job_pool* rp) {
+    if(rp->num_jobs > 1) {
+        for(int i = 0; i < rp->num_jobs; i++) {
+            thread_pool_add_work(tp, rp->func, (void*)&rp->parms[i]);
         }
+    } else {
+        // non-threading
+        rp->raw_func(
+            rp->parms[0].min_x, 
+            rp->parms[0].min_y,
+            rp->parms[0].max_x,
+            rp->parms[0].max_y
+        );
     }
 }
-void wait_for_render_pool_to_finish(render_pool* p) {
-    if(NUM_THREADS > 1) {
+
+void wait_for_render_pool_to_finish(job_pool* p) {
+    if(p->num_jobs > 1) {
         while(1) {
             top_of_wait_loop:;
             for(int i = 0; i < p->num_jobs; i++) {
@@ -278,7 +300,7 @@ void reload_map() {
 }
 
 
-
+int debug_print = 0;
 
 void handle_keyup(SDL_KeyboardEvent key) {
     switch(key.keysym.scancode) {
@@ -334,6 +356,31 @@ void handle_keyup(SDL_KeyboardEvent key) {
         case SDL_SCANCODE_N:
             next_map();
             break;
+        case SDL_SCANCODE_P:
+            debug_print = !debug_print;
+            break;
+
+        // change output resolution, window size
+        case SDL_SCANCODE_Y: do {
+            cur_output_size_idx++;
+            if(cur_output_size_idx > 2) { cur_output_size_idx = 0; }
+
+            if(double_pixels == 1) {
+                render_width = OUTPUT_WIDTH/2;
+                render_height = OUTPUT_HEIGHT/2;
+            } else if (double_pixels == 2) {
+                render_width = OUTPUT_WIDTH/4;
+                render_height = OUTPUT_HEIGHT/4;
+            } else {
+                render_width = OUTPUT_WIDTH;
+                render_height = OUTPUT_HEIGHT;
+            }
+            aspect_ratio = ((f32)render_width)/render_height;
+            setup_render_size = 0;
+        } while(0);
+        break;
+
+        // change internal render resolution
         case SDL_SCANCODE_R: do {
             if(double_pixels == 1) {
                 render_width = OUTPUT_WIDTH/4;
@@ -408,24 +455,24 @@ void handle_input(f32 dt) {
 
     int head_margin = 1;
     int knee_height = 2;
-    int eye_height = 8;
+    int eye_height = 4;
 
     if(gravmode && falling) {
         int collide_z = 0;
-        f32 contact_point = (255.0-height)+eye_height;  
+        f32 contact_point = pos_z+eye_height;
         f32 new_world_pos_z = contact_point+.05*dt;
            
         for(int x = pos_x-1; x < pos_x+2; x++) {
             for(int y = pos_y-1; y < pos_y+2; y++) {
-                for(int h = new_world_pos_z; h < new_world_pos_z+1; h++) {
+                for(int z = new_world_pos_z; z < new_world_pos_z+1; z++) {
 
-                    if(voxel_is_solid(x, y, h) || h >= cur_map_max_height) {
+                    if(voxel_is_solid(x, y, z) || z >= cur_map_max_height) {
                         falling = 0;
                         break;
                     } else {
-                        height = 255.0-(h-eye_height);
+                        pos_z = z-1-eye_height;
+                        falling = 1;
                     }
-
                 }
             }
         }
@@ -448,22 +495,60 @@ void handle_input(f32 dt) {
 
     
     if(strafe) {
-           f32 new_pos_x = pos_x + dir_y * strafe * dt * 15;
-           f32 new_pos_y = pos_y + (dir_x * -1) * strafe * dt * 15;
-           pos_x = new_pos_x;
-           pos_y = new_pos_y;
+        int go_up_height = pos_z-1;
+        f32 new_pos_x = pos_x + dir_y * strafe * dt * 15;
+        f32 new_pos_y = pos_y + (dir_x * -1) * strafe * dt * 15;
+
+
+        if(gravmode && check_for_solid_voxel_in_aabb(new_pos_x, pos_y, pos_z, 0, 0, 0)) {
+            if(check_for_solid_voxel_in_aabb(new_pos_x, pos_y, go_up_height, 0, 0, 0)) {
+
+            } else {
+                // go up a step
+                pos_x = new_pos_x;
+                pos_z = go_up_height;
+            }
+        } else {
+            pos_x = new_pos_x;
+        }
+
+        if(gravmode && check_for_solid_voxel_in_aabb(pos_x, new_pos_y, pos_z, 0, 0, 0)) {
+            if(check_for_solid_voxel_in_aabb(pos_x, new_pos_y, go_up_height, 0, 0, 0)) {
+
+            } else {
+                // go up a step
+                pos_y = new_pos_y;
+                pos_z = go_up_height;
+            }
+        } else {
+            pos_y = new_pos_y;
+        }
+    
     }
 
     if(forwardbackward) {
         f32 new_pos_x = pos_x + dir_x * forwardbackward * dt * 100;
         f32 new_pos_y = pos_y + dir_y * forwardbackward * dt * 100;
-        f32 new_pos_z = height + (forwardbackward * 2*sinf(pitch_ang)) * dt * 100;
-        pos_x = new_pos_x;
-        pos_y = new_pos_y;
+        f32 new_pos_z = pos_z + (forwardbackward * 2*sinf(pitch_ang)) * dt * 100;
+        
+        //int pos_z = pos_z+eye_height;
+
+        
+        if(!gravmode || !check_for_solid_voxel_in_aabb(new_pos_x, pos_y, pos_z, 0, 0, 0)) {
+            pos_x = new_pos_x;
+        }
+        
+        if(!gravmode || !check_for_solid_voxel_in_aabb(pos_x, new_pos_y, pos_z, 0, 0, 0)) {
+            pos_y = new_pos_y;
+        }
+    
+        /*
+        //pos_x = new_pos_x;
+        //pos_y = new_pos_y;
         height = new_pos_z;
         //check if we collide based on height (aabb basically)
         int collide_x = 0;
-        if ((s32)new_pos_x != pos_x) {
+        if (new_pos_x != pos_x) {
             int world_height = (s32)(255.0-height) + eye_height;
 
             int collide_ground_highest_point = 64;
@@ -500,7 +585,7 @@ void handle_input(f32 dt) {
         }
 
         int collide_y = 0;
-        if ((s32)new_pos_y != pos_y) {
+        if (new_pos_y != pos_y) {
             int world_height = (s32)(255.0-height) + eye_height;
 
             int collide_ground_highest_point = 64;
@@ -536,11 +621,12 @@ void handle_input(f32 dt) {
             }
         }
 
-        
+        */
+
     }
 
     if(updown) {
-        height += dt*updown*50;
+        pos_z -= dt*updown*50;
     }
     baseroll -= rollleftright*dt*1.2;
     roll = baseroll + mouseroll;  
@@ -857,7 +943,6 @@ u64 get_occlusion_block(u32 x, u32 y) {
 #define VECTOR
 
 
-void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y);
 void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y);
 void clear_screen(s32 min_x, s32 min_y, s32 max_x, s32 max_y);
 void fill_empty_entries(s32 min_x, s32 min_y, s32 max_x, s32 max_y);
@@ -868,13 +953,6 @@ thread_pool_function(raycast_scalar_wrapper, arg_var)
 {
 	thread_params* tp = (thread_params*)arg_var;
     raycast_scalar(tp->min_x, tp->min_y, tp->max_x, tp->max_y);
-	InterlockedIncrement64(&tp->finished);
-}
-
-thread_pool_function(raycast_vector_wrapper, arg_var)
-{
-	thread_params* tp = (thread_params*)arg_var;
-    raycast_vector(tp->min_x, tp->min_y, tp->max_x, tp->max_y);
 	InterlockedIncrement64(&tp->finished);
 }
 
@@ -935,8 +1013,9 @@ u16 random_adjust_15bpp_sample(u16 sample_a) {
 
 static int setup_internal_buffer = 0;
 
+
 void setup_internal_render_buffers() {        
-    u32 min_size = (s32) ceilf(sqrtf((render_width*render_width)+(render_width*render_width)));
+    s32 min_size = (s32) ceilf(sqrtf((render_width*render_width)+(render_width*render_width)));
     render_size = 2;
     while(render_size < min_size) {
         // if render size isn't big enough based on the render width
@@ -944,20 +1023,12 @@ void setup_internal_render_buffers() {
         render_size *= 2;
     }
 
-    // if internal buffers have already been allocated
-    if(base_inter_buffer != NULL) {
-        free(base_inter_buffer);
-    }
-    if(base_occlusion_buffer != NULL) {
-        free(base_occlusion_buffer);
-    }
 
-    if(pixels == NULL) {
-        pixels = malloc(sizeof(u32)*OUTPUT_WIDTH*OUTPUT_HEIGHT+32);
-        while(((intptr_t)pixels)&0b11111) {
-            pixels++;
-        }
+    pixels = realloc(pixels, sizeof(u32)*OUTPUT_WIDTH*OUTPUT_HEIGHT+32);
+    while(((intptr_t)pixels)&0b11111) {
+        pixels++;
     }
+    //}
 
     num_render_size_bits = LOG2(render_size);
 
@@ -966,12 +1037,12 @@ void setup_internal_render_buffers() {
     //scale_height = ((((16/9)*(.5))/(4/3))*render_size);
     scale_height = (render_height) * scale * max(1, aspect_ratio);
 
-    base_inter_buffer = malloc((sizeof(u32)*render_size*render_size)+32);
-    base_world_pos_buffer = malloc((sizeof(u32)*render_size*render_size)+32);
-    base_norm_buffer = malloc((sizeof(f32)*2*render_size*render_size)+32);
-    base_occlusion_buffer = malloc((sizeof(u8)*render_size*render_size/8)+32);
-    base_albedo_buffer = malloc((sizeof(u32)*render_size*render_size)+32);
-    base_premult_norm_buffer = malloc((sizeof(char)*render_size*render_size)+32);
+    base_inter_buffer = realloc(base_inter_buffer, (sizeof(u32)*render_size*render_size)+32);
+    base_world_pos_buffer = realloc(base_world_pos_buffer, (sizeof(u32)*render_size*render_size)+32);
+    base_norm_buffer = realloc(base_norm_buffer, (sizeof(f32)*2*render_size*render_size)+32);
+    base_occlusion_buffer = realloc(base_occlusion_buffer, (sizeof(u8)*render_size*render_size/8)+32);
+    base_albedo_buffer = realloc(base_albedo_buffer, (sizeof(u32)*render_size*render_size)+32);
+    base_premult_norm_buffer = realloc(base_premult_norm_buffer, (sizeof(char)*render_size*render_size)+32);
 
 
     
@@ -1241,13 +1312,15 @@ vect2d project_and_adjust_vect3d(vect3d v) {
     return res;
 }
 
+#define CLAMP(a, mi, ma) max(mi, min(a, ma))
+
 typedef enum {
     CLIP_OUT,
     CLIP_IN
 } state;
+ 
 
-
-Olivec_Canvas vc_render(f32 dt) {
+Olivec_Canvas vc_render(double dt) {
     handle_mouse_input(dt);
     handle_input(dt);   
 
@@ -1255,7 +1328,7 @@ Olivec_Canvas vc_render(f32 dt) {
 
     static int setup_thread_pool = 0;
     if(!setup_thread_pool) {
-        pool = thread_pool_create(NUM_THREADS);
+        pool = thread_pool_create(MAX_NUM_THREADS);
 
         setup_thread_pool = 1;
     }
@@ -1263,6 +1336,7 @@ Olivec_Canvas vc_render(f32 dt) {
 
 
     if(!setup_render_size) {
+        printf("setting up render buffer\n");
         setup_internal_render_buffers();
     }
 
@@ -1277,7 +1351,7 @@ Olivec_Canvas vc_render(f32 dt) {
 
 
 
-    Olivec_Canvas oc = olivec_canvas(pixels, OUTPUT_WIDTH, OUTPUT_HEIGHT, OUTPUT_WIDTH);
+    Olivec_Canvas oc = olivec_canvas(pixels, render_width, render_height, render_width, 1<<double_pixels);
 
     memset(occlusion_buffer, 0, render_size*render_size/8);
 
@@ -1309,6 +1383,7 @@ Olivec_Canvas vc_render(f32 dt) {
     int half_x = ((max_x-min_x)/2);
     int quarter_x = half_x/2;
 
+    double start_clear = GetTicks();
     // FILL BEFORE RENDER
     {
         // TODO: check if clearing the screen benefits from multiple threads
@@ -1321,7 +1396,7 @@ Olivec_Canvas vc_render(f32 dt) {
             parms[i].min_y = min_y;
             parms[i].max_y = max_y;
         }
-        render_pool rp = {
+        job_pool rp = {
             .num_jobs = 8,
             .func = clear_screen_wrapper,
             .raw_func = clear_screen,
@@ -1333,32 +1408,35 @@ Olivec_Canvas vc_render(f32 dt) {
         clear_screen(min_x, min_y, max_x, max_y);
     #endif
     }
+    double end_clear = GetTicks();
 
-#define NUM_ROTATE_LIGHT_BLEND_THREADS 8
-#define RAYCAST_THREADS 8
+    double start_raycast = GetTicks();
     {
-        thread_params parms[RAYCAST_THREADS];
+        thread_params parms[NUM_RAYCAST_THREADS];
 
-        for(int i = 0; i < RAYCAST_THREADS; i++) {
+        for(int i = 0; i < NUM_RAYCAST_THREADS; i++) {
             parms[i].finished = 0;
             parms[i].min_x = (i == 0) ? min_x : parms[i-1].max_x;
-            parms[i].max_x = (i == RAYCAST_THREADS-1) ? max_x : (parms[i].min_x + draw_dx/RAYCAST_THREADS);
+            parms[i].max_x = (i == NUM_RAYCAST_THREADS-1) ? max_x : (parms[i].min_x + draw_dx/NUM_RAYCAST_THREADS);
             parms[i].min_y = min_y;
             parms[i].max_y = max_y;
         }
-        render_pool rp = {
-            .num_jobs = RAYCAST_THREADS,
+        job_pool rp = {
+            .num_jobs = NUM_RAYCAST_THREADS,
             .parms = parms
         };
-            rp.func = vectorized_rendering ? raycast_vector_wrapper : raycast_scalar_wrapper,
-            rp.raw_func = vectorized_rendering ? raycast_vector : raycast_scalar,
+            rp.func = raycast_scalar_wrapper,
+            rp.raw_func = raycast_scalar,
+        
         //raycast_scalar(min_x, min_y, max_x, max_y);
         start_pool(pool, &rp);
         wait_for_render_pool_to_finish(&rp);
     }
+    double end_raycast = GetTicks();
 
 
-
+    /*
+        SCREEN SPACE QUADRANTS FOR 6DOF VOXLAP STYLE RENDERING
 
     vect3d up_vp_vect = {.x = 0.0f, .y = -1.0f, .z = 0.0f};
     vect3d q0_left_vect = {.x = -.7f, .y = -1.0f, .z = .7f};
@@ -1534,6 +1612,7 @@ Olivec_Canvas vc_render(f32 dt) {
 
     }
 
+    */
 
     // post-render cleanup of non-drawn pixels DOES NOT WORK
     // because transparency will blend with the pixels of the previous frame :)
@@ -1547,7 +1626,7 @@ Olivec_Canvas vc_render(f32 dt) {
             parms[i].min_y = min_y;
             parms[i].max_y = max_y;
         }
-        render_pool rp = {
+        job_pool rp = {
             .num_jobs = 8,
             .func = fill_empty_entries_wrapper,
             .raw_func = fill_empty_entries,
@@ -1557,8 +1636,10 @@ Olivec_Canvas vc_render(f32 dt) {
         wait_for_render_pool_to_finish(&rp);
     #endif
     }
+    double start_light = GetTicks();
+
     {
-        thread_params parms[8];
+        thread_params parms[12];
         if(double_pixels == 2) {
             // the left edge of the screen breaks in this pass with 8 jobs, prob not divisible by 8
             // honestly, it runs so much faster that I sort of don't care about using 8 threads here
@@ -1569,7 +1650,7 @@ Olivec_Canvas vc_render(f32 dt) {
                 parms[i].min_y = 0;
                 parms[i].max_y = render_height;
             }
-            render_pool rp = {
+            job_pool rp = {
                 .num_jobs = 4,
                 .func = rotate_light_and_blend_wrapper,
                 .raw_func = rotate_light_and_blend,
@@ -1578,15 +1659,15 @@ Olivec_Canvas vc_render(f32 dt) {
             start_pool(pool, &rp);
             wait_for_render_pool_to_finish(&rp);
         } else {
-            for(int i = 0; i < NUM_ROTATE_LIGHT_BLEND_THREADS; i++) {
+            for(int i = 0; i < NUM_ROTATE_LIGHT_AND_BLEND_THREADS; i++) {
                 parms[i].finished = 0;
-                parms[i].min_x = (render_width*i/NUM_ROTATE_LIGHT_BLEND_THREADS);
-                parms[i].max_x = parms[i].min_x + (render_width/NUM_ROTATE_LIGHT_BLEND_THREADS);
+                parms[i].min_x = (render_width*i/NUM_ROTATE_LIGHT_AND_BLEND_THREADS);
+                parms[i].max_x = parms[i].min_x + (render_width/NUM_ROTATE_LIGHT_AND_BLEND_THREADS);
                 parms[i].min_y = 0;
                 parms[i].max_y = render_height;
             }
-            render_pool rp = {
-                .num_jobs = NUM_ROTATE_LIGHT_BLEND_THREADS,
+            job_pool rp = {
+                .num_jobs = NUM_ROTATE_LIGHT_AND_BLEND_THREADS,
                 .func = rotate_light_and_blend_wrapper,
                 .raw_func = rotate_light_and_blend,
                 .parms = parms
@@ -1595,13 +1676,18 @@ Olivec_Canvas vc_render(f32 dt) {
             wait_for_render_pool_to_finish(&rp);
         }   
     }
+    double end_light = GetTicks();
 
     int mouse_off_x = (cur_mouse_x - (OUTPUT_WIDTH/2))/(1<<double_pixels);
     int mouse_off_y = (cur_mouse_y - (OUTPUT_HEIGHT/2))/(1<<double_pixels);
 
 
+    int center_plus_mouse_off_x = ((render_size/2)+mouse_off_x);
+    int center_plus_mouse_off_y = ((render_size/2)+mouse_off_y);
+    int clamp_x = CLAMP(center_plus_mouse_off_x, 0, render_size-1);
+    int clamp_y = CLAMP(center_plus_mouse_off_y, 0, render_size-1);
 
-    u32 center_fb_idx = fb_swizzle((render_size/2)+mouse_off_x, ((render_size/2)+mouse_off_y));
+    u32 center_fb_idx = fb_swizzle(clamp_x, clamp_y);
     u32 combined_world_idx = world_pos_buffer[center_fb_idx];
 
 
@@ -1682,8 +1768,6 @@ Olivec_Canvas vc_render(f32 dt) {
     f32 ms = dt*1000;
     f32 fps = 1000/ms;
 
-
-    printf("fps; %f\n", fps);
     
     total_time += ms;
     frame++;
@@ -1733,12 +1817,12 @@ Olivec_Canvas vc_render(f32 dt) {
     }
 
 
-    {
+    if (debug_print) {
 
         #define DEBUG_PRINT_TEXT(fmt_str, ...) do { \
             sprintf(buf, (fmt_str), __VA_ARGS__);   \
-            olivec_text_no_blend(oc, buf, 5, y, olivec_default_font, 2, 0xFFFFFFFF);\
-            y += 13;                                \
+            olivec_text_no_blend(oc, buf, 5, y, olivec_default_font, double_pixels?1:2, 0xFF0000FF);\
+            y += double_pixels ? 7 : 13;                                \
         } while(0);
 
         char buf[128];
@@ -1748,12 +1832,19 @@ Olivec_Canvas vc_render(f32 dt) {
         DEBUG_PRINT_TEXT("amb. occlusion: %s", ambient_occlusion ? "enabled" : "disabled");
         DEBUG_PRINT_TEXT("fog:            %s", fogmode ? "enabled" : "disabled");
         DEBUG_PRINT_TEXT("transparency:   %s", transparency ? "enabled" : "disabled");
-        DEBUG_PRINT_TEXT("render mode:    %s", vectorized_rendering ? "vector" : "scalar");
+        DEBUG_PRINT_TEXT("render mode:    %s", vectorized_rendering ? "vector pre-skip" : "scalar");
         DEBUG_PRINT_TEXT("view mode:      %s", view_mode_strs[view]);
         DEBUG_PRINT_TEXT("render resolution: %ix%i", max_x-min_x, (max_y+1)-min_y);
-        DEBUG_PRINT_TEXT("frametime: %.2fms", (dt*1000));
-        return oc;
+        DEBUG_PRINT_TEXT("output resolution: %ix%i", OUTPUT_WIDTH, OUTPUT_HEIGHT);
+        DEBUG_PRINT_TEXT("clear %.2fms", (end_clear-start_clear)*1000.0f);
+        DEBUG_PRINT_TEXT("raycast %.2fms", (end_raycast-start_raycast)*1000.0f);
+        DEBUG_PRINT_TEXT("light %.2fms", (end_light-start_light)*1000.0f);
+        DEBUG_PRINT_TEXT("frametime: %.2fms", (dt*1000.0f));
+        DEBUG_PRINT_TEXT("fps: %.2f", (1000.0f / (dt*1000.0f)));
+        DEBUG_PRINT_TEXT("%f,%f", pos_x, pos_y);
+
     }
+    return oc;
 }
 
 void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
@@ -1804,7 +1895,7 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
     __m256 render_size_ps_vec = _mm256_set1_ps(render_size);
 
-    __m256 height_vec = _mm256_set1_ps(height);
+    __m256 height_vec = _mm256_set1_ps(255.0f-pos_z);
 
     f32 fog_r = (background_color&0xFF);
     f32 fog_g = ((background_color>>8)&0xFF);
@@ -1827,7 +1918,7 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     
     __m256 pos_x_vec = _mm256_set1_ps(pos_x);
     __m256 pos_y_vec = _mm256_set1_ps(pos_y);
-    __m256 inverse_height_vec = _mm256_set1_ps(255-height);
+    //__m256 inverse_height_vec = _mm256_set1_ps(pos_z);
     __m256 ten_twenty_four_vec = _mm256_set1_ps(1024.0);
 
     f32 sun_vec_x = 0;
@@ -1895,6 +1986,7 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             __m256 float_depths = _mm256_sqrt_ps(_mm256_add_ps(_mm256_mul_ps(dxs, dxs), _mm256_mul_ps(dys, dys)));
 
             __m256i color_idxs = _mm256_and_si256(world_space_poses, low_seven_bits_mask);
+            // undrawn = world_space_poses == undrawn_bit_mask_vec, which is 0b10000000
             __m256i undrawn = _mm256_cmpeq_epi32(undrawn_bit_mask_vec, _mm256_and_si256(undrawn_bit_mask_vec, world_space_poses));
             __m256i depths_eq_max = undrawn;
             
@@ -2113,7 +2205,7 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                 _mm256_or_si256(alpha_vec, _mm256_slli_epi32(int_bs, 16)),
                 _mm256_or_si256(_mm256_slli_epi32(int_gs, 8), int_rs)
             );
-            if(double_pixels == 2) {
+            if(0) { //double_pixels == 2) {
                 __m256i out_reg1_selectors = _mm256_setr_epi32(0,0,0,0,1,1,1,1);
                 __m256i out_reg2_selectors = _mm256_setr_epi32(2,2,2,2,3,3,3,3);
                 __m256i out_reg3_selectors = _mm256_setr_epi32(4,4,4,4,5,5,5,5);
@@ -2131,7 +2223,7 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                 }
                
 
-            } else if (double_pixels == 1) { 
+            } else if (0) { //double_pixels == 1) { 
                 __m256i out_reg1_selectors = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
                 __m256i out_reg2_selectors = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
                 u32* pix_ptr = &pixels[(oy*2)*OUTPUT_WIDTH+(base_ox*2)];
@@ -2260,9 +2352,48 @@ typedef enum {
 
 
 
+s32 world_to_screen(s32 world_pos, f32 height, f32 invz, f32 next_invz, f32 pitch) {
+    // invz is really scale_height / z
+    // so multiplying by it is really (something * scale_height / z)
+    f32 relative_height =  height - (255 - world_pos); //[voxelmap_idx];
+    f32 selected_invz = (relative_height < 0 ? invz : next_invz);
+    f32 float_projected_height = relative_height * selected_invz;
+    s32 int_projected_height = floor(float_projected_height) + pitch;
+    return int_projected_height;
+}
+
+
+f32 screen_to_world(s32 int_projected_height, f32 z, f32 pitch) {
+    f32 height = 255.0f - pos_z;
+    f32 float_projected_height = int_projected_height - pitch;
+    f32 relative_height = float_projected_height * z / scale_height;
+
+    f32 world_pos = 255 - (pitch * z / scale_height) - height;
+    //return world_pos;
+}
+
+void raycast_skipped_block_scalar(
+    int min_x, int min_y, int max_x, int max_y, 
+    __m256i rem_x_steps_vec, __m256i rem_y_steps_vec,
+    __m256 perp_wall_dists_vec, __m256 next_perp_wall_dists_vec,
+    __m256 side_dists_x_vec, __m256 side_dists_y_vec,
+    __m256i map_x_vec, __m256i map_y_vec,
+    __m256i step_x_vec, __m256i step_y_vec,
+    __m256 delta_dist_x_vec, __m256 delta_dist_y_vec,
+    __m256 invz_vec, __m256 next_invz_vec
+);
+
+
 void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
-  
-    
+    // allocate on stack for this hack lol :)
+    #ifdef CALC_COLUMN_STATS 
+    int skipped_cells_per_column[1920]; // until onscreen
+    int z_steps_per_column[1920];
+    for(int i = 0; i < max_x-min_x; i++) {
+        skipped_cells_per_column[i] = -1;
+    }
+    #endif
+
     f32 fog_r = (background_color&0xFF);
     f32 fog_g = ((background_color>>8)&0xFF);
     f32 fog_b = ((background_color>>16)&0xFF);
@@ -2276,12 +2407,14 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     
     
     f32 pitch = pitch_ang_to_pitch(pitch_ang);
-    u8 prev_side, next_side;
 
     profile_block raycast_scalar_block;
     TimeBlock(raycast_scalar_block, "raycast scalar");
 
     for(int x = min_x; x < max_x; x++) {
+        int skipped_cells_for_this_column = 0;
+        int got_possibly_onscreen_column = 0;
+        int z_steps_for_this_column = 0;
 
         int next_drawable_min_y = min_y;
         int prev_drawn_max_y = max_y+1;
@@ -2327,14 +2460,14 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
             f32 side_dist_dx = (side_dist_x < side_dist_y) ? delta_dist_x : 0;
             f32 side_dist_dy = (side_dist_x < side_dist_y) ? 0 : delta_dist_y;
-            prev_side = next_side;
-            next_side = (side_dist_x < side_dist_y) ? X_SIDE : Y_SIDE;
 
             side_dist_x += side_dist_dx;
             side_dist_y += side_dist_dy;
 
             map_x += map_x_dx;
             map_y += map_y_dy;
+            skipped_cells_for_this_column++;
+            z_steps_for_this_column++;
         }
 
         f32 invz = scale_height / perp_wall_dist;
@@ -2350,8 +2483,6 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
 
             u32 prepared_combined_world_map_pos = ((map_x)<<19)|((map_y)<<8); 
-            //u32 prepared_combined_world_map_pos = ((int)(avg_dist*32)<<16);
-
             
             int map_x_dx = (side_dist_x < side_dist_y) ? step_x : 0;
             int map_y_dy = (side_dist_x < side_dist_y) ? 0 : step_y;
@@ -2362,13 +2493,11 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
             f32 side_dist_dx = (side_dist_x < side_dist_y) ? delta_dist_x : 0;
             f32 side_dist_dy = (side_dist_x < side_dist_y) ? 0 : delta_dist_y;
-            prev_side = next_side;
             u32 d_x_steps = (side_dist_x < side_dist_y) ? 1 : 0;
             u32 d_y_steps = (side_dist_x < side_dist_y) ? 0 : 1;
             max_x_steps -= d_x_steps;
             max_y_steps -= d_y_steps;
 
-            next_side = (side_dist_x < side_dist_y) ? X_SIDE : Y_SIDE;
 
 
 
@@ -2380,6 +2509,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
 
             if(map_x < 0 || map_x > 1023 || map_y < 0 || map_y > 1023) {
+                skipped_cells_for_this_column += (got_possibly_onscreen_column == 0 ? 1 : 0);
                 goto next_z_step;
             }
 
@@ -2393,65 +2523,34 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             u32 mip_map_x = (map_x >> mip);
             u32 mip_map_y = (map_y >> mip);
             u32 mip_voxelmap_idx = get_voxelmap_idx(mip_map_x, mip_map_y);
-
-            // having arbitrary 3d voxels makes normals more difficult
-            // so just use face normals rather than precalculated normals
             
-            //f32 map_norm_pt1 = normal_pt1_data[map_idx];
-            //f32 map_norm_pt2 = normal_pt2_data[map_idx];
-
-            //f32 normal_pt1 = (lighting ? ((prev_side == X_SIDE) ? encoded_x_side_norm.x : encoded_y_side_norm.x) : map_norm_pt1);
-            //f32 normal_pt2 = (lighting ? ((prev_side == X_SIDE) ? encoded_x_side_norm.y : encoded_y_side_norm.y) : map_norm_pt2);
-            //f32 top_face_norm_pt1 = (lighting ? encoded_top_face_norm.x : map_norm_pt1);
-            //f32 top_face_norm_pt2 = (lighting ? encoded_top_face_norm.y : map_norm_pt2);
-            //f32 bot_face_norm_pt1 = (lighting ? encoded_bot_face_norm.x : map_norm_pt1);
-            //f32 bot_face_norm_pt2 = (lighting ? encoded_bot_face_norm.y : map_norm_pt2);
-
-            
-            f32 normal_pt1 = ((prev_side == X_SIDE) ? encoded_x_side_norm.x : encoded_y_side_norm.x);
-            f32 normal_pt2 = ((prev_side == X_SIDE) ? encoded_x_side_norm.y : encoded_y_side_norm.y);
-            f32 top_face_norm_pt1 = encoded_top_face_norm.x;
-            f32 top_face_norm_pt2 = encoded_top_face_norm.y;
-            f32 bot_face_norm_pt1 = encoded_bot_face_norm.x;
-            f32 bot_face_norm_pt2 = encoded_bot_face_norm.y;
-            
-            //f32 normal_pt1 = (lighting ? ((prev_side == X_SIDE) ? encoded_x_side_norm.x : encoded_y_side_norm.x) : map_norm_pt1);
-            //f32 normal_pt2 = (lighting ? ((prev_side == X_SIDE) ? encoded_x_side_norm.y : encoded_y_side_norm.y) : map_norm_pt2);
-            //f32 top_face_norm_pt1 = (lighting ? encoded_top_face_norm.x : map_norm_pt1);
-            //f32 top_face_norm_pt2 = (lighting ? encoded_top_face_norm.y : map_norm_pt2);
-            //f32 bot_face_norm_pt1 = (lighting ? encoded_bot_face_norm.x : map_norm_pt1);
-            //f32 bot_face_norm_pt2 = (lighting ? encoded_bot_face_norm.y : map_norm_pt2);
-
-
             column_header* header = &columns_header_data[voxelmap_idx];
 
-            if(header->num_runs == 0) { goto next_z_step; }
+            if(header->num_runs == 0) { 
+                skipped_cells_for_this_column += (got_possibly_onscreen_column == 0 ? 1 : 0);
+                goto next_z_step; 
+            }
 
             // check the top of this column against the bottom of the frustum skip drawing it
-
-            f32 relative_top_of_col =  height - (255 - header->top_y); //[voxelmap_idx];
-            f32 col_top_invz = (relative_top_of_col < 0 ? invz : next_invz);
-            f32 float_top_of_col_projected_height = relative_top_of_col*col_top_invz;
-            s32 int_top_of_col_projected_height = floor(float_top_of_col_projected_height) + pitch;
-
-
+            f32 height = 255.0f - pos_z;
+            s32 int_top_of_col_projected_height = world_to_screen(header->top_y, height, invz, next_invz, pitch);
+            f32 reverse_projected = screen_to_world(int_top_of_col_projected_height, 1.0f/invz, pitch);
+            f32 next_reverse_projected = screen_to_world(int_top_of_col_projected_height, 1.0f/next_invz, pitch);
 
             span* span_info = columns_runs_data[voxelmap_idx].runs_info;
             
             if(int_top_of_col_projected_height >= prev_drawn_max_y) {
+                skipped_cells_for_this_column += (got_possibly_onscreen_column == 0 ? 1 : 0);
                 goto next_z_step;
             }
             u8 num_runs = header->num_runs;
 
-            f32 relative_bot_of_col = height - (255 - cur_map_max_height); //span_info[num_runs-1].bot);
-            f32 col_bot_invz = (relative_bot_of_col < 0 ? next_invz : invz);
-            f32 float_bot_of_col_projected_height = relative_bot_of_col * col_bot_invz;
-            s32 int_bot_of_col_projected_height = floor(float_bot_of_col_projected_height) + pitch;
+            s32 int_bot_of_col_projected_height = world_to_screen(cur_map_max_height, height, invz, next_invz, pitch);
             if(int_bot_of_col_projected_height <= next_drawable_min_y) {
+                skipped_cells_for_this_column += (got_possibly_onscreen_column == 0 ? 1 : 0);
                 goto next_z_step;
             }
-
-
+            got_possibly_onscreen_column = 1;
 
 // draw top or bottom face
 
@@ -2459,7 +2558,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
         //f32 new_norm_pt1 = occlusion_bit ? old_norm_pt1 : (face_norm_1);                    
         //f32 new_norm_pt2 = occlusion_bit ? old_norm_pt2 : (face_norm_2);                    
 
-#define DRAW_CHUNK_FACE(top, bot, face_norm_1, face_norm_2, voxel_color_idx) {              \
+#define DRAW_CHUNK_FACE(top, bot, voxel_color_idx) {              \
     u32 fb_idx = fb_swizzle(x,top);                                                         \
     u32 color = top_of_col_color_ptr[voxel_color_idx];                                      \
     f32 norm_pt1 = top_of_col_norm_pt1_ptr[voxel_color_idx];                                \
@@ -2490,7 +2589,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
 // draw side of chunk
 // needs voxel color interpolation
-#define DRAW_CHUNK_SIDE(top, bot, face_norm_pt1, face_norm_pt2) {                           \
+#define DRAW_CHUNK_SIDE(top, bot) {                           \
     s32 clipped_top_y = clipped_top_side_height - int_top_side_projected_height;            \
     f32 texel_per_y = ((f32)num_voxels) / unclipped_screen_dy;                              \
     f32 cur_voxel_color_idx = (f32)clipped_top_y * texel_per_y;                             \
@@ -2524,11 +2623,10 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     }                                                                                       \
 }
 
-#define CLAMP(a, mi, ma) max(mi, min(a, ma))
 
 
 
-#define DRAW_CHUNK(chunk_top, chunk_bot, is_top_chunk, is_transparent_chunk, break_if_top_below_screen, break_if_bot_above_screen, side_norm_pt1, side_norm_pt2, face_norm_pt1, face_norm_pt2) {         \
+#define DRAW_CHUNK(chunk_top, chunk_bot, is_top_chunk, is_transparent_chunk, break_if_top_below_screen, break_if_bot_above_screen) {         \
     f32 relative_bot = height-chunk_bot;                                                 \
     f32 relative_top = height-chunk_top;                                                 \
     s32 int_top_face_projected_height = floor(relative_top*next_invz) + pitch;           \
@@ -2555,14 +2653,14 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
         s32 clipped_bot_side_height = CLAMP(int_bot_side_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
         if(is_top_chunk && clipped_top_face_height < clipped_top_side_height) {          \
             u16 color_offset = (color_ptr - top_of_col_color_ptr);                       \
-            DRAW_CHUNK_FACE(clipped_top_face_height, clipped_top_side_height, top_face_norm_pt1, top_face_norm_pt2, color_offset); \
+            DRAW_CHUNK_FACE(clipped_top_face_height, clipped_top_side_height, color_offset); \
         }                                                                                \
         if(clipped_top_side_height < clipped_bot_side_height) {                          \
-            DRAW_CHUNK_SIDE(clipped_top_side_height, clipped_bot_side_height,  side_norm_pt1, side_norm_pt2); \
+            DRAW_CHUNK_SIDE(clipped_top_side_height, clipped_bot_side_height); \
         }                                                                                \
         if(clipped_bot_side_height < clipped_bot_face_height) {       \
             u16 color_offset = ((color_ptr - top_of_col_color_ptr)+num_voxels)-1;        \
-            DRAW_CHUNK_FACE(clipped_bot_side_height, clipped_bot_face_height, bot_face_norm_pt1, bot_face_norm_pt2, color_offset); \
+            DRAW_CHUNK_FACE(clipped_bot_side_height, clipped_bot_face_height, color_offset); \
         }                                                                                \
         s32 next_prev_drawn_max_y = (min_coverage < 0b11) ? prev_drawn_max_y : (bot_projected_heightonscreen >= prev_drawn_max_y && top_projected_heightonscreen < prev_drawn_max_y) ? top_projected_heightonscreen : prev_drawn_max_y;             \
         s32 next_next_drawable_min_y = (min_coverage < 0b11) ? next_drawable_min_y :  (top_projected_heightonscreen <= next_drawable_min_y && bot_projected_heightonscreen > next_drawable_min_y) ? bot_projected_heightonscreen : next_drawable_min_y; \
@@ -2572,7 +2670,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 }           
 
 
-       
+    
 #define DRAW_CHUNK_BOTTOM_UP(chunk_top, chunk_bot, is_top_chunk, is_transparent_chunk, break_if_top_below_screen, break_if_bot_above_screen, side_norm_pt1, side_norm_pt2, face_norm_pt1, face_norm_pt2) {         \
     f32 relative_bot = height-chunk_bot;                                                 \
     f32 relative_top = height-chunk_top;                                                 \
@@ -2602,20 +2700,20 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                                                                                         \
         if(clipped_bot_side_height < clipped_bot_face_height) {                         \
             u16 color_offset = ((color_ptr - top_of_col_color_ptr)+num_voxels)-1;        \
-            DRAW_CHUNK_FACE(clipped_bot_side_height, clipped_bot_face_height, bot_face_norm_pt1, bot_face_norm_pt2, color_offset); \
+            DRAW_CHUNK_FACE(clipped_bot_side_height, clipped_bot_face_height, color_offset); \
         }                                                                                \
         if(clipped_top_side_height < clipped_bot_side_height) {                          \
-            DRAW_CHUNK_SIDE(clipped_top_side_height, clipped_bot_side_height,  side_norm_pt1, side_norm_pt2); \
+            DRAW_CHUNK_SIDE(clipped_top_side_height, clipped_bot_side_height); \
         }                                                                                   \
         if(is_top_chunk && clipped_top_face_height < clipped_top_side_height) {          \
             u16 color_offset = (color_ptr - top_of_col_color_ptr);                       \
-            DRAW_CHUNK_FACE(clipped_top_face_height, clipped_top_side_height, top_face_norm_pt1, top_face_norm_pt2, color_offset); \
+            DRAW_CHUNK_FACE(clipped_top_face_height, clipped_top_side_height, color_offset); \
         }                                                                        \
         prev_drawn_max_y = next_prev_drawn_max_y; \
         next_drawable_min_y = next_next_drawable_min_y; \
     }   \
 }           
-  
+
             
             
             //int chunk_top = -1;
@@ -2655,7 +2753,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                             bot_surface_top, bot_surface_end, 
                             0, //span_info[run].is_top, 
                             ((color_ptr[0]>>24)&0b11) != 0b11,//0, //span_info[run].is_transparent, 
-                            0, 1, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2
+                            0, 1
                         );
                     }
 
@@ -2666,7 +2764,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                         top_surface_top, top_surface_bot, 
                         1, //span_info[run].is_top, 
                         ((color_ptr[0]>>24)&0b11) != 0b11, //0, //span_info[run].is_transparent, 
-                        0, 1, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2
+                        0, 1
                     );
                 } 
 
@@ -2684,7 +2782,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                         top_surface_top, top_surface_bot, 
                         1, //span_info[run].is_top, 
                         ((color_ptr[0]>>24)&0b11) != 0b11, //0, //span_info[run].is_transparent, 
-                        1, 0, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2
+                        1, 0
                     );
                     color_ptr += ((span_info[run].top_surface_end+1)-span_info[run].top_surface_start);
                     if(span_info[run].bot_surface_end > span_info[run].bot_surface_start) {
@@ -2692,7 +2790,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                             bot_surface_top, bot_surface_bot, 
                             0, //span_info[run].is_top, 
                             ((color_ptr[0]>>24)&0b11) != 0b11, //0, //span_info[run].is_transparent, 
-                            1, 0, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2
+                            1, 0
                         );
                         color_ptr += (span_info[run].bot_surface_end-span_info[run].bot_surface_start);
                     }
@@ -2704,10 +2802,31 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
         map_x = next_map_x;
         map_y = next_map_y;
         invz = next_invz;
+        z_steps_for_this_column++;
         }
+        #ifdef CALC_COLUMN_STATS 
+        skipped_cells_per_column[x-min_x] = skipped_cells_for_this_column;
+        z_steps_per_column[x-min_x] = z_steps_for_this_column;
+        #endif
     }
     EndTimeBlock(raycast_scalar_block);
 
+    #ifdef CALC_COLUMN_STATS 
+    {
+        u64 total_skipped_cells = 0;
+        for(int i = 0; i < max_x-min_x; i++) {
+            total_skipped_cells += skipped_cells_per_column[i];
+        }
+
+        double total_waste = 0.0f;
+        for(int i = 0; i < max_x-min_x; i++) {
+            double waste = skipped_cells_per_column[i] / ((double) z_steps_per_column[i]);
+            total_waste += waste;
+        }
+        printf("avg skipped cells per column: %f\n", ((double)total_skipped_cells)/(max_x-min_x));
+        printf("avg wasted steps: %f\n", ((double)total_waste)/(max_x-min_x));
+    }
+    #endif
     //printf("max mip level of %i\n", max_mip);
 }
 
@@ -2823,998 +2942,4 @@ void fill_empty_entries(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
         //EndCountedTimeBlock(coverage_fill_empty_entries, max_y-min_y);
     }
     EndTimeBlock(coverage_fill_empty_entries);
-}
-
-u64 total_vector_samples;
-u64 reused_vector_samples;
-
-
-void raycast_vector(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
-    
-    
-    f32 fog_r = (background_color&0xFF);
-    f32 fog_g = ((background_color>>8)&0xFF);
-    f32 fog_b = ((background_color>>16)&0xFF);
-
-    u8 looking_up = (pitch_ang > 0.0);
-
-    float2 encoded_top_face_norm = encode_norm(0, -1, 0);
-    float2 encoded_bot_face_norm = encode_norm(0, 1, 0);
-    float2 encoded_x_side_norm = encode_norm( (dir_x > 0 ? 1 : -1), 0, 0);
-    float2 encoded_y_side_norm = encode_norm(0, 0, (dir_y > 0 ? 1 : -1));
-    
-    
-    f32 pitch = pitch_ang_to_pitch(pitch_ang);
-
-
-    profile_block raycast_vector_block;
-    TimeBlock(raycast_vector_block, "raycast vector");
-
-    //__m256i prev_sides, next_sides;
-    //u8 prev_sides[8], next_sides[8];
-    __m256i prev_sides = _mm256_set1_epi32(0);
-    __m256i next_sides = _mm256_set1_epi32(0);
-
-    //for(int i = 0; i < 8; i++) {
-    //    camera_space_xs[i] = ((2*xs[i])/(f32)render_size)-1;
-    //}
-    f32 camera_space_x_per_dx = 2.0/render_size;
-    f32 camera_space_x_per_8_x = 8*camera_space_x_per_dx;
-
-    __m256i two_fifty_five_vec = _mm256_set1_epi32(255);
-    __m256 zero_ps_vec = _mm256_set1_ps(0);
-    __m256 one_ps_vec = _mm256_set1_ps(1);
-    __m256 two_ps_vec = _mm256_set1_ps(2);
-    __m256i one_vec = _mm256_set1_epi32(1);
-    __m256i negative_one_vec = _mm256_set1_epi32(-1);
-    __m256 one_e_30_vec = _mm256_set1_ps(1e30);
-    __m256i zero_vec = _mm256_set1_epi32(0);
-    __m256 height_vec = _mm256_set1_ps(height);
-    __m256i pitch_vec = _mm256_set1_epi32(pitch);
-
-    __m256 dir_x_vec = _mm256_set1_ps(dir_x);
-    __m256 dir_y_vec = _mm256_set1_ps(dir_y);
-    __m256 plane_x_vec = _mm256_set1_ps(plane_x);
-    __m256 plane_y_vec = _mm256_set1_ps(plane_y);
-    __m256 scale_height_vec = _mm256_set1_ps(scale_height);
-
-    __m256i cur_map_max_height_vec = _mm256_set1_epi32(cur_map_max_height);
-
-    __m256 max_z_vec = _mm256_set1_ps(max_z);
-
-    //f32 dir_x_vec[8] = {dir_x,dir_x,dir_x,dir_x,dir_x,dir_x,dir_x,dir_x};
-    //f32 dir_y_vec[8] = {dir_y,dir_y}
-
-    int min_x_aligned = min_x & ~0b11111;
-    //int xs[8] = {0,1,2,3,4,5,6,7};
-    __m256i xs = _mm256_setr_epi32(
-        min_x_aligned+0,min_x_aligned+1,min_x_aligned+2,min_x_aligned+3,
-        min_x_aligned+4,min_x_aligned+5,min_x_aligned+6,min_x_aligned+7);
-    __m256i dxs_vec = _mm256_set1_epi32(8);
-    //for(int x = min_x; x < max_x; x += 8) {
-    for(int x = min_x_aligned; x < max_x; x += 8) {
-        //int next_drawable_min_y = min_y;
-        //int prev_drawn_max_y = max_y+1;
-
-        
-        // TODO: vectorize
-        //int next_drawable_min_ys[8] = {min_y, min_y, min_y, min_y, min_y, min_y, min_y, min_y};
-        //int prev_drawn_max_ys[8] = {max_y+1, max_y+1, max_y+1, max_y+1, max_y+1, max_y+1, max_y+1, max_y+1};
-        __m256i next_drawable_min_ys = _mm256_set1_epi32(min_y);
-        __m256i prev_drawn_max_ys = _mm256_set1_epi32(max_y+1);
-
-        //f32 camera_space_x = ((2 * x) / ((f32)render_size)) - 1; //x-coordinate in camera space
-        //f32 camera_space_xs[8];
-        //for(int i = 0; i < 8; i++) {
-        //    camera_space_xs[i] = ((2 * (x+i)) / ((f32)render_size)) - 1;
-        //}
-        __m256 camera_space_xs = _mm256_sub_ps(
-                                    _mm256_div_ps(
-                                        _mm256_mul_ps(_mm256_cvtepi32_ps(xs), two_ps_vec),
-                                        _mm256_set1_ps(render_size)
-                                    ),
-                                    one_ps_vec);
-
-        // TODO: vectorize
-        //int camera_space_xs[8];
-        //for(int i = 0; i < 8; i++) {
-        //}
-
-        //f32 ray_dir_x = dir_x + (plane_x * camera_space_x);
-        //f32 ray_dir_y = dir_y + (plane_y * camera_space_x);
-
-        
-        // TODO: vectorize
-        __m256 ray_dir_xs = _mm256_add_ps(dir_x_vec, _mm256_mul_ps(plane_x_vec, camera_space_xs));
-        __m256 ray_dir_ys = _mm256_add_ps(dir_y_vec, _mm256_mul_ps(plane_y_vec, camera_space_xs));
-        
-        //f32 ray_dir_xs[8], ray_dir_ys[8];
-        //for(int i = 0; i < 8; i++) {
-        //    ray_dir_xs[i] = dir_x + (plane_x * camera_space_xs[i]);
-        //   ray_dir_ys[i] = dir_y + (plane_y * camera_space_xs[i]);
-        //}
-
-        //which box of the map we're in
-        s32 map_x = ((s32)pos_x);
-        s32 map_y = ((s32)pos_y);
-        __m256i map_xs = _mm256_set1_epi32(map_x);
-        __m256i map_ys = _mm256_set1_epi32(map_y);
-        //s32 map_xs[8] __attribute__ ((aligned (32))) = {map_x,map_x,map_x,map_x,map_x,map_x,map_x,map_x};
-        //s32 map_ys[8] __attribute__ ((aligned (32))) = {map_y,map_y,map_y,map_y,map_y,map_y,map_y,map_y}; 
-
-        //length of ray from one x or y-side to next x or y-side
-
-        //f32 delta_dist_x = (ray_dir_x == 0) ? 1e30 : fabs(1 / ray_dir_x);
-        //f32 delta_dist_y = (ray_dir_y == 0) ? 1e30 : fabs(1 / ray_dir_y);
-
-        
-        // TODO: vectorize
-        __m256 ray_dir_xs_eq_zero = _mm256_cmp_ps(ray_dir_xs, zero_ps_vec, _CMP_EQ_UQ);
-        __m256 ray_dir_ys_eq_zero = _mm256_cmp_ps(ray_dir_xs, zero_ps_vec, _CMP_EQ_UQ);
-        __m256 div_safe_ray_dir_xs = _mm256_blendv_ps(ray_dir_xs, one_ps_vec, ray_dir_xs_eq_zero);
-        __m256 div_safe_ray_dir_ys = _mm256_blendv_ps(ray_dir_ys, one_ps_vec, ray_dir_ys_eq_zero);
-        __m256 abs_one_over_ray_dir_xs = abs_ps(_mm256_div_ps(one_ps_vec, div_safe_ray_dir_xs));
-        __m256 abs_one_over_ray_dir_ys = abs_ps(_mm256_div_ps(one_ps_vec, div_safe_ray_dir_ys));
-        __m256 delta_dist_xs = _mm256_blendv_ps(abs_one_over_ray_dir_xs, one_e_30_vec, ray_dir_xs_eq_zero);
-        __m256 delta_dist_ys = _mm256_blendv_ps(abs_one_over_ray_dir_ys, one_e_30_vec, ray_dir_ys_eq_zero);
-        
-
-        //f32 delta_dist_xs[8], delta_dist_ys[8];
-        //for(int i = 0; i < 8; i++) {
-        //    delta_dist_xs[i] = (ray_dir_xs[i] == 0.0f ? 1e30 : (fabs(1/ray_dir_xs[i])));
-        //    delta_dist_ys[i] = (ray_dir_ys[i] == 0.0f ? 1e30 : (fabs(1/ray_dir_ys[i])));
-        //}
-
-        f32 wrap_x_minus_map_x = (pos_x - map_x);
-        f32 map_x_plus_one_minus_wrap_x = (map_x + (1.0 - pos_x));
-        f32 wrap_y_minus_map_y = (pos_y - map_y);
-        f32 map_y_plus_one_minus_wrap_y = (map_y + (1.0 - pos_y));
-
-
-        //what direction to step in x or y-direction (either +1 or -1)
-        //int step_x = (ray_dir_x < 0) ? -1 : 1;
-        //int step_y = (ray_dir_y < 0) ? -1 : 1;
-
-        // TODO: vectorize
-        //s32 step_xs[8], step_ys[8];
-        //for(int i = 0; i < 8; i++) {
-        //    step_xs[i] = (ray_dir_xs[i] < 0.0f) ? -1 : 1;
-        //    step_ys[i] = (ray_dir_ys[i] < 0.0f) ? -1 : 1;
-        //}
-        __m256 ray_dir_xs_less_than_zero = _mm256_cmp_ps(ray_dir_xs, zero_ps_vec, _CMP_LT_OQ);
-        __m256 ray_dir_ys_less_than_zero = _mm256_cmp_ps(ray_dir_ys, zero_ps_vec, _CMP_LT_OQ);
-        __m256i step_xs = _mm256_blendv_epi8(one_vec, negative_one_vec, (__m256i)ray_dir_xs_less_than_zero);
-        __m256i step_ys = _mm256_blendv_epi8(one_vec, negative_one_vec, (__m256i)ray_dir_ys_less_than_zero);
-
-
-        //f32 perp_wall_dists[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-        //f32 next_perp_wall_dists[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-        __m256 perp_wall_dists = zero_ps_vec;
-        __m256 next_perp_wall_dists = zero_ps_vec;
-        //f32 perp_wall_dist = 0;
-        //f32 next_perp_wall_dist = 0;
-
-        //length of ray from current position to next x or y-side
-        //f32 side_dist_x = (ray_dir_x < 0 ? wrap_x_minus_map_x : map_x_plus_one_minus_wrap_x) * delta_dist_x;
-        //f32 side_dist_y = (ray_dir_y < 0 ? wrap_y_minus_map_y : map_y_plus_one_minus_wrap_y) * delta_dist_y;
-
-        
-        // TODO: vectorize
-        //f32 side_dist_xs[8], side_dist_ys[8];
-        //for(int i = 0; i < 8; i++) {
-        //    side_dist_xs[i] = (ray_dir_xs[i] < 0.0f ? wrap_x_minus_map_x : map_x_plus_one_minus_wrap_x) * delta_dist_xs[i];
-        //    side_dist_ys[i] = (ray_dir_ys[i] < 0.0f ? wrap_y_minus_map_y : map_y_plus_one_minus_wrap_y) * delta_dist_ys[i];
-        //}
-        __m256 wrap_x_minus_map_xs = _mm256_set1_ps(wrap_x_minus_map_x);
-        __m256 wrap_y_minus_map_ys = _mm256_set1_ps(wrap_y_minus_map_y);
-        __m256 map_x_plus_one_minus_wrap_xs = _mm256_set1_ps(map_x_plus_one_minus_wrap_x);
-        __m256 map_y_plus_one_minus_wrap_ys = _mm256_set1_ps(map_y_plus_one_minus_wrap_y);
-        __m256 side_dist_xs = _mm256_mul_ps(_mm256_blendv_ps(map_x_plus_one_minus_wrap_xs, wrap_x_minus_map_xs, ray_dir_xs_less_than_zero), delta_dist_xs);
-        __m256 side_dist_ys = _mm256_mul_ps(_mm256_blendv_ps(map_y_plus_one_minus_wrap_ys, wrap_y_minus_map_ys, ray_dir_ys_less_than_zero), delta_dist_ys);
-        
-
-        // TODO: vectorize
-        //int any_perp_wall_dists_are_zero = 0;
-        //for(int i = 0; i < 8; i++) {
-        //    any_perp_wall_dists_are_zero |= (perp_wall_dists[i] == 0.0f);
-        //}
-        int any_perp_wall_dists_are_zero = _mm256_movemask_ps(_mm256_cmp_ps(perp_wall_dists, zero_ps_vec, _CMP_EQ_UQ));
-
-        while(any_perp_wall_dists_are_zero) {
-            //int map_x_dx = (side_dist_x < side_dist_y) ? step_x : 0;
-            //int map_y_dy = (side_dist_x < side_dist_y) ? 0 : step_y;
-            
-            // TODO: vectorize
-            //s32 smap_x_dxs[8],smap_y_dys[8];
-            //for(int i = 0; i < 8; i++) {
-            //    smap_x_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? step_xs[i] : 0;
-            //    smap_y_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0 : step_ys[i];
-            //}
-            __m256 side_dist_xs_less_than_side_dist_ys = _mm256_cmp_ps(side_dist_xs, side_dist_ys, _CMP_LT_OQ);
-            __m256i map_x_dxs = _mm256_blendv_epi8(zero_vec, step_xs, (__m256i)side_dist_xs_less_than_side_dist_ys);
-            __m256i map_y_dys = _mm256_blendv_epi8(step_ys, zero_vec, (__m256i)side_dist_xs_less_than_side_dist_ys);
-
-
-            // TODO: vectorize
-            //for(int i = 0; i < 8; i++) {
-            //    perp_wall_dists[i] = next_perp_wall_dists[i];
-            //    next_perp_wall_dists[i] = (side_dist_xs[i] < side_dist_ys[i]) ? side_dist_xs[i] : side_dist_ys[i];
-            //}
-
-            perp_wall_dists = next_perp_wall_dists;
-            next_perp_wall_dists = _mm256_blendv_ps(side_dist_ys, side_dist_xs, side_dist_xs_less_than_side_dist_ys);
-
-
-            //f32 side_dist_dx = (side_dist_x < side_dist_y) ? delta_dist_x : 0;
-            //f32 side_dist_dy = (side_dist_x < side_dist_y) ? 0 : delta_dist_y;
-            //prev_side = next_side;
-            //next_side = (side_dist_x < side_dist_y) ? X_SIDE : Y_SIDE;
-            
-            // TODO: vectorize
-            //f32 side_dist_dxs[8], side_dist_dys[8];
-            //for(int i = 0; i < 8; i++) {
-            //    side_dist_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? delta_dist_xs[i] : 0.0f;
-            //    side_dist_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0.0f : delta_dist_ys[i];
-            //}
-            __m256 side_dist_dxs = _mm256_blendv_ps(zero_ps_vec, delta_dist_xs, side_dist_xs_less_than_side_dist_ys);
-            __m256 side_dist_dys = _mm256_blendv_ps(delta_dist_ys, zero_ps_vec, side_dist_xs_less_than_side_dist_ys);
-
-            // TODO: vectorize
-            //int prev_sides[8],next_sides[8];
-            //for(int i = 0; i < 8; i++) {
-            //    prev_sides[i] = next_sides[i];
-            //    next_sides[i] = (side_dist_xs[i] < side_dist_ys[i]) ? X_SIDE : Y_SIDE;
-            //}
-            prev_sides = next_sides;
-            next_sides = _mm256_blendv_epi8(_mm256_set1_epi32(Y_SIDE), _mm256_set1_epi32(X_SIDE), (__m256i)side_dist_xs_less_than_side_dist_ys);
-
-            //side_dist_x += side_dist_dx;
-            //side_dist_y += side_dist_dy;
-            // TODO: vectorize
-            
-            //for(int i = 0; i < 8; i++) {
-            //    side_dist_xs[i] += side_dist_dxs[i];
-            //    side_dist_ys[i] += side_dist_dys[i];
-            //}
-            side_dist_xs = _mm256_add_ps(side_dist_xs, side_dist_dxs);
-            side_dist_ys = _mm256_add_ps(side_dist_ys, side_dist_dys);
-
-
-            //map_x += map_x_dx;
-            //map_y += map_y_dy;
-            // TODO: vectorize
-            map_xs = _mm256_add_epi32(map_xs, map_x_dxs);
-            map_ys = _mm256_add_epi32(map_ys, map_y_dys);
-
-            //for(int i = 0; i < 8; i++) {
-            //    map_xs[i] += map_x_dxs[i];
-            //    map_ys[i] += map_y_dys[i];
-            //}
-
-
-            // TODO: vectorize
-            //any_perp_wall_dists_are_zero = 0;
-            //for(int i = 0; i < 8; i++) {
-            //    any_perp_wall_dists_are_zero |= (perp_wall_dists[i] == 0);
-            //}
-            any_perp_wall_dists_are_zero = _mm256_movemask_ps(_mm256_cmp_ps(perp_wall_dists, zero_ps_vec, _CMP_EQ_UQ));
-        }
-
-        //f32 invz = scale_height / perp_wall_dist;
-        //f32 next_invz = scale_height / next_perp_wall_dist;
-        // TODO: vectorize
-        //f32 invzs[8], next_invzs[8];
-        //for(int i = 0; i < 8; i++) {
-        //    invzs[i] = scale_height / perp_wall_dists[i];
-        //    next_invzs[i] = scale_height / next_perp_wall_dists[i];
-        //}
-        __m256 invzs = _mm256_div_ps(scale_height_vec, perp_wall_dists);
-        __m256 next_invzs = _mm256_div_ps(scale_height_vec, next_perp_wall_dists);
-
-        profile_block z_step_block;
-
-        //s32 max_x_steps = (ray_dir_x > 0 ? (1023-(s32)pos_x) : (((s32)pos_x))) + 1;
-        //s32 max_y_steps = (ray_dir_y > 0 ? (1023-(s32)pos_y) : (((s32)pos_y))) + 1;
-        // TODO: vectorize
-        
-        //s32 rem_x_steps[8],rem_y_steps[8];
-        //for(int i = 0; i < 8; i++) {
-        //    rem_x_steps[i] = (ray_dir_xs[i] > 0.0f ? (MAP_X_SIZE - (s32)pos_x) : ((s32)pos_x)) + 1;
-        //    rem_y_steps[i] = (ray_dir_ys[i] > 0.0f ? (MAP_Y_SIZE - (s32)pos_y) : ((s32)pos_y)) + 1;
-        //}
-        __m256i rem_x_steps = _mm256_add_epi32(
-            _mm256_blendv_epi8(
-                 _mm256_set1_epi32(MAP_X_SIZE - (s32)pos_x), 
-                _mm256_set1_epi32(pos_x),
-                 (__m256i)ray_dir_xs_less_than_zero), 
-            one_vec);
-        __m256i rem_y_steps = _mm256_add_epi32(
-            _mm256_blendv_epi8(
-                 _mm256_set1_epi32(MAP_Y_SIZE - (s32)pos_y), 
-                 _mm256_set1_epi32(pos_y),
-                 (__m256i)ray_dir_ys_less_than_zero), 
-            one_vec);
-
-        // TODO: vectorize
-        //int any_perp_wall_dists_lte_max_z = 0;
-        //for(int i = 0; i < 8; i++) {
-        //    any_perp_wall_dists_lte_max_z |= perp_wall_dists[i] <= max_z;
-        //}
-        int any_perp_wall_dists_lte_max_z = _mm256_movemask_ps(_mm256_cmp_ps(perp_wall_dists, max_z_vec, _CMP_LE_OQ));
-
-        // TODO: vectorize
-        //int any_prev_drawn_max_ys_gt_next_drawable_min_ys = 0;
-        //for(int i = 0; i < 8; i++) {
-        //    any_prev_drawn_max_ys_gt_next_drawable_min_ys |= (prev_drawn_max_ys[i] > next_drawable_min_ys[i]);
-        //}
-        int any_prev_drawn_max_ys_gt_next_drawable_min_ys = _mm256_movemask_epi8(_mm256_cmpgt_epi32(prev_drawn_max_ys, next_drawable_min_ys));
-
-        // TODO: vectorize
-        //int any_rem_x_steps_gt_zero = 0;
-        //for(int i = 0; i < 8; i++) {
-        //    any_rem_x_steps_gt_zero |= (rem_x_steps[i] > 0);
-        //}
-        int any_rem_x_steps_gt_zero = _mm256_movemask_epi8(_mm256_cmpgt_epi32(rem_x_steps, zero_vec));
-
-        // TODO: vectorize
-        //int any_rem_y_steps_gt_zero = 0;
-        //for(int i = 0; i < 8; i++) {
-        //    any_rem_y_steps_gt_zero |= (rem_y_steps[i] > 0);
-        //}
-        int any_rem_y_steps_gt_zero = _mm256_movemask_epi8(_mm256_cmpgt_epi32(rem_y_steps, zero_vec));
-
-        while(any_perp_wall_dists_lte_max_z && any_prev_drawn_max_ys_gt_next_drawable_min_ys && any_rem_x_steps_gt_zero && any_rem_y_steps_gt_zero) {
-
-            u32 scalar_prepared_combined_world_map_poses[8] __attribute__ ((aligned (32)));
-            _mm256_store_si256(
-                (__m256i*)scalar_prepared_combined_world_map_poses,
-                _mm256_or_si256(
-                    _mm256_slli_epi32(map_xs, 19),
-                    _mm256_slli_epi32(map_ys, 8)
-                )
-            );
-
-                   
-            
-            __m256 side_dist_xs_less_than_side_dist_ys = _mm256_cmp_ps(side_dist_xs, side_dist_ys, _CMP_LT_OQ);
-            __m256i map_x_dxs = _mm256_blendv_epi8(zero_vec, step_xs, (__m256i)side_dist_xs_less_than_side_dist_ys);
-            __m256i map_y_dys = _mm256_blendv_epi8(step_ys, zero_vec, (__m256i)side_dist_xs_less_than_side_dist_ys);
-            //s32 smap_x_dxs[8];
-            //s32 smap_y_dys[8];
-            //for(int i = 0; i < 8; i++) {
-            //    smap_x_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? step_xs[i] : 0;
-            //    smap_y_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0 : step_ys[i];
-            //}
-            //__m256i map_x_dxs = _mm256_load_si256(smap_x_dxs);
-            //__m256i map_y_dys = _mm256_load_si256(smap_y_dys);
-            //__m256i map_x_dxs = _mm256_blendv_epi8(
-            //    zero_vec,
-            //    _mm256_load_si256(step_xs),
-            //    (__m256i)_mm256_cmp_ps(
-            //        _mm256_load_ps(side_dist_xs),
-            //        _mm256_load_ps(side_dist_ys),
-            //         _CMP_LT_OQ));
-            //__m256i map_y_dys = _mm256_blendv_epi8(
-            //    _mm256_load_si256(step_ys),
-            //    zero_vec,
-            //    (__m256i)_mm256_cmp_ps(
-            //        _mm256_load_ps(side_dist_xs),
-            //        _mm256_load_ps(side_dist_ys),
-            //         _CMP_LT_OQ));
-            
-
-            //perp_wall_dist = next_perp_wall_dist;
-            //next_perp_wall_dist = (side_dist_x < side_dist_y) ? side_dist_x : side_dist_y;
-            // TODO: vectorize
-            //for(int i = 0; i < 8; i++) {
-            //    perp_wall_dists[i] = next_perp_wall_dists[i];
-            //    next_perp_wall_dists[i] = (side_dist_xs[i] < side_dist_ys[i]) ? side_dist_xs[i] : side_dist_ys[i];
-            //}
-            perp_wall_dists = next_perp_wall_dists;
-            next_perp_wall_dists = _mm256_blendv_ps(side_dist_ys, side_dist_xs, side_dist_xs_less_than_side_dist_ys);
-
-
-
-
-             //f32 side_dist_dx = (side_dist_x < side_dist_y) ? delta_dist_x : 0;
-            //f32 side_dist_dy = (side_dist_x < side_dist_y) ? 0 : delta_dist_y;
-            //prev_side = next_side;
-            //next_side = (side_dist_x < side_dist_y) ? X_SIDE : Y_SIDE;
-            //max_x_steps -= (side_dist_x < side_dist_y) ? 1 : 0;
-            //max_y_steps -= (side_dist_x < side_dist_y) ? 0 : 1;
-
-            
-            // TODO: vectorize
-            //f32 side_dist_dxs[8], side_dist_dys[8];
-            //for(int i = 0; i < 8; i++) {
-            //    side_dist_dxs[i] = (side_dist_xs[i] < side_dist_ys[i]) ? delta_dist_xs[i] : 0.0f;
-            //    side_dist_dys[i] = (side_dist_xs[i] < side_dist_ys[i]) ? 0.0f : delta_dist_ys[i];
-            //}
-            __m256 side_dist_dxs = _mm256_blendv_ps(zero_ps_vec, delta_dist_xs, side_dist_xs_less_than_side_dist_ys);
-            __m256 side_dist_dys = _mm256_blendv_ps(delta_dist_ys, zero_ps_vec, side_dist_xs_less_than_side_dist_ys);
-
-            // TODO: vectorize
-            //int prev_sides[8], next_sides[8];
-            //for(int i = 0; i < 8; i++) {
-            //    prev_sides[i] = next_sides[i];
-            //    next_sides[i] = (side_dist_xs[i] < side_dist_ys[i]) ? X_SIDE : Y_SIDE;
-            //}
-            prev_sides = next_sides;
-            next_sides = _mm256_blendv_epi8(_mm256_set1_epi32(Y_SIDE), _mm256_set1_epi32(X_SIDE), (__m256i)side_dist_xs_less_than_side_dist_ys);
-
-
-            // TODO: vectorize
-            rem_x_steps = _mm256_sub_epi32(rem_x_steps, _mm256_blendv_epi8(zero_vec, one_vec, (__m256i)side_dist_xs_less_than_side_dist_ys));
-            rem_y_steps = _mm256_sub_epi32(rem_y_steps, _mm256_blendv_epi8(one_vec, zero_vec, (__m256i)side_dist_xs_less_than_side_dist_ys));
-            //for(int i = 0; i < 8; i++) {
-            //    rem_x_steps[i] -= (side_dist_xs[i] < side_dist_ys[i]) ? 1 : 0;
-            //    rem_y_steps[i] -= (side_dist_xs[i] < side_dist_ys[i]) ? 0 : 1;
-            //}
-
-
-            //side_dist_x += side_dist_dx;
-            //side_dist_y += side_dist_dy;
-            // TODO: vectorize
-            //for(int i = 0; i < 8; i++) {
-            //    side_dist_xs[i] += side_dist_dxs[i];
-            //    side_dist_ys[i] += side_dist_dys[i];
-            //}
-            side_dist_xs = _mm256_add_ps(side_dist_xs, side_dist_dxs);
-            side_dist_ys = _mm256_add_ps(side_dist_ys, side_dist_dys);
-
-
-            //s32 next_map_x = map_x + map_x_dx;
-            //s32 next_map_y = map_y + map_y_dy;
-            // TODO: vectorize
-            
-            
-            //s32 next_map_xs[8], next_map_ys[8];
-            //for(int i = 0; i < 8; i++) {
-            //    next_map_xs[i] = map_xs[i] + map_x_dxs[i];
-            //    next_map_ys[i] = map_ys[i] + map_y_dys[i];
-            //}
-
-            __m256i next_map_xs = _mm256_add_epi32(map_xs, map_x_dxs);
-            __m256i next_map_ys = _mm256_add_epi32(map_ys, map_y_dys);
-
-
-            //if(map_x < 0 || map_x > 1023 || map_y < 0 || map_y > 1023) {
-            //    goto next_z_step;
-            //}
-            // TODO: vectorize
-            int inside_map_bounds[8];
-            __m256i inside_map_bounds_vec = _mm256_and_si256(
-                _mm256_and_si256(
-                    _mm256_cmpgt_epi32(map_ys, _mm256_set1_epi32(-1)),
-                    _mm256_cmpgt_epi32(_mm256_set1_epi32(1024), map_ys)
-                ),
-                _mm256_and_si256(
-                    _mm256_cmpgt_epi32(map_xs, _mm256_set1_epi32(-1)),
-                    _mm256_cmpgt_epi32(_mm256_set1_epi32(1024), map_xs)
-                )
-            );
-            int any_inside_bounds = _mm256_movemask_epi8(inside_map_bounds_vec);
-            _mm256_store_si256((__m256i*)inside_map_bounds, inside_map_bounds_vec);
-            //for(int i = 0; i < 8; i++) {
-                //inside_map_bounds[i] = (map_xs[i] >= 0) && (map_xs[i] < 1024) && (map_ys[i] >= 0) && (map_ys[i] < 1024);
-                //any_inside_bounds |= inside_map_bounds[i];
-            //}
-
-            if(!any_inside_bounds) {
-                goto next_z_step;
-            }
-
-            
-            //next_invz = scale_height / next_perp_wall_dist;
-            //u32 voxelmap_idx = get_voxelmap_idx(map_x, map_y);
-            // TODO: vectorize
-            //for(int i = 0; i < 8; i++) {
-            //    next_invzs[i] = scale_height / next_perp_wall_dists[i];
-            //}
-            next_invzs = _mm256_div_ps(scale_height_vec, next_perp_wall_dists);
-            
-            __m256i voxelmap_idxs = get_voxelmap_idx_256(
-                map_xs, map_ys
-                //_mm256_load_si256((__m256i*)map_xs),
-                //_mm256_load_si256((__m256i*)map_ys)
-            );
-            //u32 voxelmap_idxs[8];
-            //for(int i = 0; i < 8; i++) {
-            //    voxelmap_idxs[i] = get_voxelmap_idx(map_xs[i], map_ys[i]);
-            //}
-
-            
-            //f32 normal_pt1 = ((prev_side == X_SIDE) ? encoded_x_side_norm.x : encoded_y_side_norm.x);
-            //f32 normal_pt2 = ((prev_side == X_SIDE) ? encoded_x_side_norm.y : encoded_y_side_norm.y);
-            //f32 top_face_norm_pt1 = encoded_top_face_norm.x;
-            //f32 top_face_norm_pt2 = encoded_top_face_norm.y;
-            //f32 bot_face_norm_pt1 = encoded_bot_face_norm.x;
-            //f32 bot_face_norm_pt2 = encoded_bot_face_norm.y;
-            
-
-            //column_header* header = &columns_header_data[voxelmap_idx];
-            // TODO: vectorize
-
-            //column_header* headers[8];
-            //for(int i = 0; i < 8; i++) {
-            //    headers[i] = &columns_header_data[voxelmap_idxs[i]];
-            //}
-            __m256i headers = _mm256_i32gather_epi32((const int*)columns_header_data, voxelmap_idxs, 2);
-            __m256i header_top_ys = _mm256_and_si256(_mm256_set1_epi32(0xFF), headers);
-            __m256i header_num_runs = _mm256_and_si256(_mm256_set1_epi32(0xFF), _mm256_srli_epi32(headers, 8));
-
-
-            //if(header->num_runs == 0) { goto next_z_step; }
-            // TODO: vectorize
-            //int any_headers_have_runs = 0;
-            //for(int i = 0; i < 8; i++) {
-            //    any_headers_have_runs |= (headers[i]->num_runs > 0);
-            //}
-            int any_headers_have_runs = _mm256_movemask_epi8(_mm256_cmpgt_epi32(header_num_runs, _mm256_set1_epi32(0)));
-
-            if(!any_headers_have_runs) {
-                goto next_z_step;
-            }
-
-            //s32 top_ys[8] __attribute__ ((aligned (32)));
-            //_mm256_store_si256((__m256i*)top_ys, header_top_ys);
-
-
-            // check the top of this column against the bottom of the frustum skip drawing it
-            //f32 relative_top_of_col =  height - (255 - header->top_y); //[voxelmap_idx];
-            //f32 col_top_invz = (relative_top_of_col < 0 ? invz : next_invz);
-            //f32 float_top_of_col_projected_height = relative_top_of_col*col_top_invz;
-            //s32 int_top_of_col_projected_height = floor(float_top_of_col_projected_height) + pitch;
-            //if(int_top_of_col_projected_height >= prev_drawn_max_y) {
-            //    goto next_z_step;
-            //}
-            // TODO: vectorize
-            //f32 relative_tops_of_cols[8];
-            //f32 col_top_invzs[8];
-            //f32 float_top_of_col_projected_heights[8];
-            //s32 int_top_of_col_projected_heights[8];
-
-            //for(int i = 0; i < 8; i++) {
-            //    relative_tops_of_cols[i] = height - (255 - top_ys[i]);
-            //}
-
-            __m256 relative_tops_of_cols = _mm256_sub_ps(height_vec, 
-                                                _mm256_cvtepi32_ps(
-                                                    _mm256_sub_epi32(two_fifty_five_vec, header_top_ys)));
-
-            __m256 relative_tops_of_cols_lt_zero =  _mm256_cmp_ps(relative_tops_of_cols, zero_ps_vec, _CMP_LT_OQ);
-            __m256 col_top_invzs = _mm256_blendv_ps(next_invzs, invzs, relative_tops_of_cols_lt_zero);
-
-            __m256 float_top_of_col_projected_heights = _mm256_mul_ps(relative_tops_of_cols, col_top_invzs);
-            __m256i int_top_of_col_projected_heights = _mm256_add_epi32(
-                            _mm256_cvtps_epi32(
-                                _mm256_floor_ps(float_top_of_col_projected_heights)
-                            ), 
-                        pitch_vec);
-
-            int any_top_of_col_projected_heights_lt_prev_drawn_max_y = _mm256_movemask_epi8(
-                _mm256_cmpgt_epi32(prev_drawn_max_ys, int_top_of_col_projected_heights)
-            );
-            if(!any_top_of_col_projected_heights_lt_prev_drawn_max_y) {
-                goto next_z_step;
-            }
-
-            //for(int i = 0; i < 8; i++) {
-            //    col_top_invzs[i] = (relative_tops_of_cols[i] < 0 ? invzs[i] : next_invzs[i]);
-            //}
-            //for(int i = 0; i < 8; i++) {
-            //    float_top_of_col_projected_heights[i] = relative_tops_of_cols[i] * col_top_invzs[i];
-            //}
-            //for(int i = 0; i < 8; i++) {
-            //    int_top_of_col_projected_heights[i] = floor(float_top_of_col_projected_heights[i])+pitch;
-            //}
-            //int all_top_of_col_projected_heights_gte_prev_drawn_max_y = 1;
-            //for(int i = 0; i < 8; i++) {
-            //    all_top_of_col_projected_heights_gte_prev_drawn_max_y &= (int_top_of_col_projected_heights[i] >= prev_drawn_max_ys[i]);
-            //}
-            //if(all_top_of_col_projected_heights_gte_prev_drawn_max_y) {
-            //    goto next_z_step;
-            //}
-
-
-
-            //f32 relative_bot_of_col = height - (255 - cur_map_max_height); //span_info[num_runs-1].bot);
-            //f32 col_bot_invz = (relative_bot_of_col < 0 ? next_invz : invz);
-            //f32 float_bot_of_col_projected_height = relative_bot_of_col * col_bot_invz;
-            //s32 int_bot_of_col_projected_height = floor(float_bot_of_col_projected_height) + pitch;
-            //if(int_bot_of_col_projected_height < next_drawable_min_y) {
-            //    goto next_z_step;
-            //}
-            // TODO: vectorize
-            //f32 relative_bots_of_cols[8];
-            //f32 col_bot_invzs[8];
-            //f32 float_bot_of_col_projected_heights[8];
-            //s32 int_bot_of_col_projected_heights[8];
-            //for(int i = 0; i < 8; i++) {
-            //    relative_bots_of_cols[i] = height - ( 255 - cur_map_max_height);
-            //}
-            __m256 relative_bots_of_cols = _mm256_sub_ps(height_vec, 
-                                                _mm256_cvtepi32_ps(
-                                                    _mm256_sub_epi32(two_fifty_five_vec, cur_map_max_height_vec)));
-            //for(int i = 0; i < 8; i++) {
-            //    col_bot_invzs[i] = (relative_bots_of_cols[i] < 0 ? next_invzs[i] : invzs[i]);
-            //}
-            __m256 relative_bots_of_cols_lt_zero =  _mm256_cmp_ps(relative_bots_of_cols, zero_ps_vec, _CMP_LT_OQ);
-            __m256 col_bot_invzs = _mm256_blendv_ps(next_invzs, invzs, relative_bots_of_cols_lt_zero);
-            //for(int i = 0; i < 8; i++) {
-            //    float_bot_of_col_projected_heights[i] = relative_bots_of_cols[i] * col_bot_invzs[i];
-            //}
-            __m256 float_bot_of_col_projected_heights = _mm256_mul_ps(relative_bots_of_cols, col_bot_invzs);
-            __m256i int_bot_of_col_projected_heights = _mm256_add_epi32(
-                            _mm256_cvtps_epi32(
-                                _mm256_floor_ps(float_bot_of_col_projected_heights)
-                            ), 
-                        pitch_vec);
-
-            //for(int i = 0; i < 8; i++) {
-            //    int_bot_of_col_projected_heights[i] = floor(float_bot_of_col_projected_heights[i]) + pitch;
-            //}
-            //int all_bot_of_col_projected_heights_lt_next_drawable_min_y = 1;
-            //for(int i = 0; i < 8; i++) {
-            //    all_bot_of_col_projected_heights_lt_next_drawable_min_y &= (int_bot_of_col_projected_heights[i] < next_drawable_min_ys[i]);
-            //}
-            
-            int any_bot_of_col_projected_heights_gte_next_drawable_min_y = _mm256_movemask_epi8(
-                _mm256_or_si256(
-                    _mm256_cmpgt_epi32(prev_drawn_max_ys, int_top_of_col_projected_heights),
-                    _mm256_cmpeq_epi32(prev_drawn_max_ys, int_top_of_col_projected_heights)
-                )
-            );
-
-            if(!any_bot_of_col_projected_heights_gte_next_drawable_min_y) {
-                goto next_z_step;
-            }
-
-
-
-
-          
-
-#define DRAW_CHUNK_FACE(top, bot, face_norm_1, face_norm_2, voxel_color_idx) {              \
-    u32 fb_idx = fb_swizzle(x,top);                                                         \
-    u32 color = top_of_col_color_ptr[voxel_color_idx];                                      \
-    f32 norm_pt1 = top_of_col_norm_pt1_ptr[voxel_color_idx];                                \
-    f32 norm_pt2 = top_of_col_norm_pt2_ptr[voxel_color_idx];                                \
-    for(int y = top; y < bot; y++) {                                                        \
-        u8 occlusion_bit = get_occlusion_bit(x, y);                                         \
-        u32 combined_world_pos = prepared_combined_world_map_pos|(voxel_color_idx);         \
-        f32 old_norm_pt1 = norm_buffer[fb_idx*2];                                           \
-        f32 old_norm_pt2 = norm_buffer[fb_idx*2+1];                                         \
-        f32 new_norm_pt1 = occlusion_bit ? old_norm_pt1 : norm_pt1;                         \
-        f32 new_norm_pt2 = occlusion_bit ? old_norm_pt2 : norm_pt2;                         \
-        u32 old_color = albedo_buffer[fb_idx];                                              \
-        u32 mixed_color = mix_colors(old_color, color);                                     \
-        u32 old_world_pos = world_pos_buffer[fb_idx];                                       \
-        u32 new_world_pos = occlusion_bit ? old_world_pos : combined_world_pos;             \
-        u32 new_color = (occlusion_bit ? old_color : mixed_color);                          \
-        u8 mixed_alpha_coverage = (mixed_color>>24)&0b11;                                   \
-        u8 new_occlusion_bit = (occlusion_bit ? 1 : (mixed_alpha_coverage == 0b11) ? 1 : 0);\
-        min_coverage = (occlusion_bit ? min_coverage : min(mixed_alpha_coverage, min_coverage));\
-        set_occlusion_bit(x, y, new_occlusion_bit);                                         \
-        norm_buffer[fb_idx*2] = new_norm_pt1;                                               \
-        norm_buffer[fb_idx*2+1] = new_norm_pt2;                                             \
-        world_pos_buffer[fb_idx] = new_world_pos;                                           \
-        albedo_buffer[fb_idx] = new_color;                                                  \
-        fb_idx += 8;                                                                        \
-    }                                                                                       \
-}
-
-// draw side of chunk
-// needs voxel color interpolation
-#define DRAW_CHUNK_SIDE(top, bot, face_norm_pt1, face_norm_pt2) {                           \
-    s32 clipped_top_y = clipped_top_side_height - int_top_side_projected_height;            \
-    f32 texel_per_y = ((f32)num_voxels) / unclipped_screen_dy;                              \
-    f32 cur_voxel_color_idx = (f32)clipped_top_y * texel_per_y;                             \
-    u32 fb_idx = fb_swizzle(x,top);                                                         \
-    for(int y = top; y < bot; y++) {                                                        \
-        u8 occlusion_bit = get_occlusion_bit(x, y);                                         \
-        u16 voxel_color_idx = cur_voxel_color_idx;                                          \
-        u32 color = color_ptr[voxel_color_idx];                                             \
-        f32 norm_pt1 = top_of_col_norm_pt1_ptr[voxel_color_idx];                            \
-        f32 norm_pt2 = top_of_col_norm_pt2_ptr[voxel_color_idx];                            \
-        u32 old_color = albedo_buffer[fb_idx];                                              \
-        u32 mixed_color = mix_colors(old_color, color);                                     \
-        u32 combined_world_pos = prepared_combined_world_map_pos|((voxel_color_idx+color_ptr)-top_of_col_color_ptr);         \
-        cur_voxel_color_idx += texel_per_y;                                                 \
-        f32 old_norm_pt1 = norm_buffer[fb_idx*2];                                           \
-        f32 old_norm_pt2 = norm_buffer[fb_idx*2+1];                                         \
-        f32 new_norm_pt1 = occlusion_bit ? old_norm_pt1 : (norm_pt1);                       \
-        f32 new_norm_pt2 = occlusion_bit ? old_norm_pt2 : (norm_pt2);                       \
-        u32 old_world_pos = world_pos_buffer[fb_idx];                                       \
-        u32 new_world_pos = occlusion_bit ? old_world_pos : combined_world_pos;             \
-        u32 new_color = (occlusion_bit ? old_color : mixed_color);                          \
-        u8 mixed_alpha_coverage = (mixed_color>>24)&0b11;                                   \
-        u8 new_occlusion_bit = (occlusion_bit ? 1 : (mixed_alpha_coverage == 0b11) ? 1 : 0);             \
-        min_coverage = (occlusion_bit ? min_coverage : min(mixed_alpha_coverage, min_coverage));\
-        set_occlusion_bit(x, y, new_occlusion_bit);                                          \
-        norm_buffer[fb_idx*2] = new_norm_pt1;                                               \
-        norm_buffer[fb_idx*2+1] = new_norm_pt2;                                             \
-        world_pos_buffer[fb_idx] = new_world_pos;                                           \
-        albedo_buffer[fb_idx] = new_color;                                                  \
-        fb_idx += 8;                                                                        \
-    }                                                                                       \
-}
-
-#define CLAMP(a, mi, ma) max(mi, min(a, ma))
-
-
-
-#define DRAW_CHUNK(chunk_top, chunk_bot, is_top_chunk, is_transparent_chunk, break_if_top_below_screen, break_if_bot_above_screen, side_norm_pt1, side_norm_pt2, face_norm_pt1, face_norm_pt2) {         \
-    f32 relative_bot = height-chunk_bot;                                                 \
-    f32 relative_top = height-chunk_top;                                                 \
-    s32 int_top_face_projected_height = floor(relative_top*next_invz) + pitch;           \
-    s32 int_top_side_projected_height = floor(relative_top*invz) + pitch;                \
-    s32 int_bot_face_projected_height = floor(relative_bot*next_invz) + pitch;           \
-    s32 int_bot_side_projected_height = floor(relative_bot*invz) + pitch;                \
-    s32 top_projected_heightonscreen = (!is_top_chunk) ? int_top_side_projected_height : min(int_top_side_projected_height, int_top_face_projected_height);\
-    s32 bot_projected_heightonscreen = is_top_chunk ? int_bot_side_projected_height : max(int_bot_side_projected_height,int_bot_face_projected_height);  \
-    u8 min_coverage = 0b11;                                                              \
-    if(break_if_bot_above_screen && bot_projected_heightonscreen < next_drawable_min_y) { \
-        break;                                                                            \
-    }                                                                                     \
-    if(break_if_top_below_screen && top_projected_heightonscreen >= prev_drawn_max_y) {   \
-        break;                                                                            \
-    }                                                                                     \
-    s32 clipped_top_heightonscreen = CLAMP(top_projected_heightonscreen, next_drawable_min_y, prev_drawn_max_y);    \
-    s32 clipped_bot_heightonscreen = CLAMP(bot_projected_heightonscreen, next_drawable_min_y, prev_drawn_max_y);       \
-    s32 unclipped_screen_dy = int_bot_side_projected_height - int_top_side_projected_height;    \
-    s32 num_voxels = (chunk_top - chunk_bot);                                           \
-    if(clipped_top_heightonscreen < clipped_bot_heightonscreen) {                        \
-        s32 clipped_top_face_height = CLAMP(int_top_face_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
-        s32 clipped_top_side_height = CLAMP(int_top_side_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
-        s32 clipped_bot_face_height = CLAMP(int_bot_face_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
-        s32 clipped_bot_side_height = CLAMP(int_bot_side_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
-        if(is_top_chunk && clipped_top_face_height < clipped_top_side_height) {          \
-            u16 color_offset = (color_ptr - top_of_col_color_ptr);                       \
-            DRAW_CHUNK_FACE(clipped_top_face_height, clipped_top_side_height, top_face_norm_pt1, top_face_norm_pt2, color_offset); \
-        }                                                                                \
-        if(clipped_top_side_height < clipped_bot_side_height) {                          \
-            DRAW_CHUNK_SIDE(clipped_top_side_height, clipped_bot_side_height,  side_norm_pt1, side_norm_pt2); \
-        }                                                                                \
-        if(clipped_bot_side_height < clipped_bot_face_height) {       \
-            u16 color_offset = ((color_ptr - top_of_col_color_ptr)+num_voxels)-1;        \
-            DRAW_CHUNK_FACE(clipped_bot_side_height, clipped_bot_face_height, bot_face_norm_pt1, bot_face_norm_pt2, color_offset); \
-        }                                                                                \
-        s32 next_prev_drawn_max_y = (min_coverage < 0b11) ? prev_drawn_max_y : (bot_projected_heightonscreen >= prev_drawn_max_y && top_projected_heightonscreen < prev_drawn_max_y) ? top_projected_heightonscreen : prev_drawn_max_y;             \
-        s32 next_next_drawable_min_y = (min_coverage < 0b11) ? next_drawable_min_y :  (top_projected_heightonscreen <= next_drawable_min_y && bot_projected_heightonscreen > next_drawable_min_y) ? bot_projected_heightonscreen : next_drawable_min_y; \
-        prev_drawn_max_y = next_prev_drawn_max_y; \
-        next_drawable_min_y = next_next_drawable_min_y; \
-    }   \
-}           
-
-
-       
-#define DRAW_CHUNK_BOTTOM_UP(chunk_top, chunk_bot, is_top_chunk, is_transparent_chunk, break_if_top_below_screen, break_if_bot_above_screen, side_norm_pt1, side_norm_pt2, face_norm_pt1, face_norm_pt2) {         \
-    f32 relative_bot = height-chunk_bot;                                                 \
-    f32 relative_top = height-chunk_top;                                                 \
-    s32 int_top_face_projected_height = floor(relative_top*next_invz) + pitch;           \
-    s32 int_top_side_projected_height = floor(relative_top*invz) + pitch;                \
-    s32 int_bot_face_projected_height = floor(relative_bot*next_invz) + pitch;           \
-    s32 int_bot_side_projected_height = floor(relative_bot*invz) + pitch;                \
-    s32 top_projected_heightonscreen = (!is_top_chunk) ? int_top_side_projected_height : min(int_top_side_projected_height, int_top_face_projected_height);\
-    s32 bot_projected_heightonscreen = is_top_chunk ? int_bot_side_projected_height : max(int_bot_side_projected_height,int_bot_face_projected_height);  \
-    if(break_if_bot_above_screen && bot_projected_heightonscreen < next_drawable_min_y) { \
-        break;                                                                            \
-    }                                                                                     \
-    if(break_if_top_below_screen && top_projected_heightonscreen >= prev_drawn_max_y) {   \
-        break;                                                                            \
-    }                                                                                     \
-    s32 next_prev_drawn_max_y = is_transparent_chunk ? prev_drawn_max_y : (bot_projected_heightonscreen >= prev_drawn_max_y && top_projected_heightonscreen < prev_drawn_max_y) ? top_projected_heightonscreen : prev_drawn_max_y;             \
-    s32 next_next_drawable_min_y = is_transparent_chunk ? next_drawable_min_y :  (top_projected_heightonscreen <= next_drawable_min_y && bot_projected_heightonscreen > next_drawable_min_y) ? bot_projected_heightonscreen : next_drawable_min_y; \
-    s32 clipped_top_heightonscreen = CLAMP(top_projected_heightonscreen, next_drawable_min_y, prev_drawn_max_y);    \
-    s32 clipped_bot_heightonscreen = CLAMP(bot_projected_heightonscreen, next_drawable_min_y, prev_drawn_max_y);       \
-    s32 unclipped_screen_dy = int_bot_side_projected_height - int_top_side_projected_height;    \
-    s32 num_voxels = (chunk_top - chunk_bot);                                           \
-    if(clipped_top_heightonscreen < clipped_bot_heightonscreen) {                        \
-        s32 clipped_top_face_height = CLAMP(int_top_face_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
-        s32 clipped_top_side_height = CLAMP(int_top_side_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
-        s32 clipped_bot_face_height = CLAMP(int_bot_face_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
-        s32 clipped_bot_side_height = CLAMP(int_bot_side_projected_height, next_drawable_min_y, prev_drawn_max_y);  \
-                                                                                        \
-        if(clipped_bot_side_height < clipped_bot_face_height) {                         \
-            u16 color_offset = ((color_ptr - top_of_col_color_ptr)+num_voxels)-1;        \
-            DRAW_CHUNK_FACE(clipped_bot_side_height, clipped_bot_face_height, bot_face_norm_pt1, bot_face_norm_pt2, color_offset); \
-        }                                                                                \
-        if(clipped_top_side_height < clipped_bot_side_height) {                          \
-            DRAW_CHUNK_SIDE(clipped_top_side_height, clipped_bot_side_height,  side_norm_pt1, side_norm_pt2); \
-        }                                                                                   \
-        if(is_top_chunk && clipped_top_face_height < clipped_top_side_height) {          \
-            u16 color_offset = (color_ptr - top_of_col_color_ptr);                       \
-            DRAW_CHUNK_FACE(clipped_top_face_height, clipped_top_side_height, top_face_norm_pt1, top_face_norm_pt2, color_offset); \
-        }                                                                        \
-        prev_drawn_max_y = next_prev_drawn_max_y; \
-        next_drawable_min_y = next_next_drawable_min_y; \
-    }   \
-}           
-  
-  
-            //span* span_info = columns_runs_data[voxelmap_idx].runs_info;
-            //u8 num_runs = header->num_runs;
-            // TODO: vectorize
-            span* span_infos[8] __attribute__ ((aligned (32)));
-            s32 scalar_num_runs[8] __attribute__ ((aligned (32)));
-            _mm256_store_si256((__m256i*)scalar_num_runs, header_num_runs);
-            // load voxelmap indexes
-            // load 
-
-            u32 scalar_voxelmap_idxs[8] __attribute__ ((aligned (32)));
-            _mm256_store_si256((__m256i*)scalar_voxelmap_idxs, voxelmap_idxs);
-
-            for(int i = 0; i < 8; i++) {
-                span_infos[i] = columns_runs_data[scalar_voxelmap_idxs[i]].runs_info;
-            }
-
-
-            //for(int i = 0; i < 8; i++) {
-            //    col_num_runs[i] = headers[i]->num_runs;
-            //}
-
-            f32 scalar_invzs[8] __attribute__ ((aligned (32))); 
-            _mm256_store_ps(scalar_invzs, invzs);
-            f32 scalar_next_invzs[8] __attribute__ ((aligned (32))); 
-            _mm256_store_ps(scalar_next_invzs, next_invzs);
-            
-            
-            s32 scalar_prev_drawn_max_ys[8] __attribute__ ((aligned (32)));
-            s32 scalar_next_drawable_min_ys[8] __attribute__ ((aligned (32)));
-            _mm256_store_si256((__m256i*)scalar_prev_drawn_max_ys, prev_drawn_max_ys);
-            _mm256_store_si256((__m256i*)scalar_next_drawable_min_ys, next_drawable_min_ys);
-
-            int old_x = x;
-            //__mm256_no
-            for(int i = 0; i < 8; i++) {
-                if(!inside_map_bounds[i]) { continue; }
-                if(prev_drawn_max_ys[i] <= next_drawable_min_ys[i]) { continue; }
-                //if(!any_prev_drawn_max_ys_gt_next_drawable_min_ys)
-                int x = old_x + i;
-                u32 voxelmap_idx = scalar_voxelmap_idxs[i];
-
-                span* span_info = span_infos[i];
-                f32 invz = scalar_invzs[i];
-                f32 next_invz = scalar_next_invzs[i];
-                f32 next_drawable_min_y = scalar_next_drawable_min_ys[i];
-                f32 prev_drawn_max_y = scalar_prev_drawn_max_ys[i];
-                u32 prepared_combined_world_map_pos = scalar_prepared_combined_world_map_poses[i];
-                int num_runs = scalar_num_runs[i];
-
-
-                u32* top_of_col_color_ptr = columns_colors_data[voxelmap_idx].colors;
-                f32* top_of_col_norm_pt1_ptr = columns_norm_data[voxelmap_idx].norm_pt1;
-                f32* top_of_col_norm_pt2_ptr = columns_norm_data[voxelmap_idx].norm_pt2;
-                u32* color_ptr = top_of_col_color_ptr;
-
-                if(looking_up) { //looking_up) {
-                    // draw from bottom to the top 
-                    // iterate over runs real quick to get the color pointer to the bottom
-                    for(int run = 0; run < num_runs; run++) {
-                        color_ptr += ((span_info[run].top_surface_end+1)-span_info[run].top_surface_start);
-                        if(span_info[run].bot_surface_end > span_info[run].bot_surface_start) {
-                            color_ptr += ((span_info[run].bot_surface_end)-span_info[run].bot_surface_start);
-                        }
-                    }
-
-                    // now go back in reverse
-                    for(int run = num_runs-1; run >= 0; run--) {   
-                        int bot_surface_top = 255 - span_info[run].bot_surface_start;
-                        int bot_surface_end = 255 - span_info[run].bot_surface_end;
-                        
-                                
-                        if(span_info[run].bot_surface_end > span_info[run].bot_surface_start) {
-                            color_ptr -= (span_info[run].bot_surface_end-span_info[run].bot_surface_start);
-
-                            DRAW_CHUNK(
-                                bot_surface_top, bot_surface_end, 
-                                0, //span_info[run].is_top, 
-                                ((color_ptr[0]>>24)&0b11) != 0b11,//0, //span_info[run].is_transparent, 
-                                0, 1, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2
-                            );
-                        }
-
-                        int top_surface_top = 255 - span_info[run].top_surface_start;
-                        int top_surface_bot = 255 - (span_info[run].top_surface_end+1);
-                        color_ptr -= ((span_info[run].top_surface_end+1)-span_info[run].top_surface_start);
-
-                        DRAW_CHUNK(
-                            top_surface_top, top_surface_bot, 
-                            1, //span_info[run].is_top, 
-                            ((color_ptr[0]>>24)&0b11) != 0b11, //0, //span_info[run].is_transparent, 
-                            0, 1, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2
-                        );
-                    } 
-
-
-                } else {
-                    // TOP DOWN LOOP
-
-                    for(int run = 0; run < num_runs; run++) {
-                        int top_surface_top = 255 - span_info[run].top_surface_start;
-                        int top_surface_bot = 255 - (span_info[run].top_surface_end+1);
-                        int bot_surface_top = 255 - span_info[run].bot_surface_start;
-                        int bot_surface_bot = 255 - span_info[run].bot_surface_end;
-
-                        DRAW_CHUNK(
-                            top_surface_top, top_surface_bot, 
-                            1, //span_info[run].is_top, 
-                            ((color_ptr[0]>>24)&0b11) != 0b11, //0, //span_info[run].is_transparent, 
-                            1, 0, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2
-                        );
-                        color_ptr += ((span_info[run].top_surface_end+1)-span_info[run].top_surface_start);
-                        if(span_info[run].bot_surface_end > span_info[run].bot_surface_start) {
-                            DRAW_CHUNK(
-                                bot_surface_top, bot_surface_bot, 
-                                0, //span_info[run].is_top, 
-                                ((color_ptr[0]>>24)&0b11) != 0b11, //0, //span_info[run].is_transparent, 
-                                1, 0, normal_pt1, normal_pt2, top_face_norm_pt1, top_face_norm_pt2
-                            );
-                            color_ptr += (span_info[run].bot_surface_end-span_info[run].bot_surface_start);
-                        }
-
-                    }
-                }
-
-                scalar_next_drawable_min_ys[i] = next_drawable_min_y;
-                scalar_prev_drawn_max_ys[i] = prev_drawn_max_y;
-            }
-            x = old_x;
-            next_drawable_min_ys = _mm256_load_si256((__m256i*)scalar_next_drawable_min_ys);
-            prev_drawn_max_ys = _mm256_load_si256((__m256i*)scalar_prev_drawn_max_ys);
-
-        next_z_step:;
-            //map_x = next_map_x;
-            //map_y = next_map_y;
-            //invz = next_invz;
-            // TODO: vectorize
-            map_xs = next_map_xs;
-            map_ys = next_map_ys;
-            //for(int i = 0; i < 8; i++) {
-            //    map_xs[i] = next_map_xs[i];
-            //}
-            //for(int i = 0; i < 8; i++) {
-            //    map_ys[i] = next_map_ys[i];
-            //}
-            //for(int i = 0; i < 8; i++) {
-            //    invzs[i] = next_invzs[i];
-            //}
-            invzs = next_invzs;
-
-            // TODO: vectorize
-            any_perp_wall_dists_lte_max_z = _mm256_movemask_ps(_mm256_cmp_ps(perp_wall_dists, max_z_vec, _CMP_LE_OQ));
-            //for(int i = 0; i < 8; i++) {
-            //    any_perp_wall_dists_lte_max_z |= perp_wall_dists[i] <= max_z;
-            //}
-
-            // TODO: vectorize
-            any_prev_drawn_max_ys_gt_next_drawable_min_ys = _mm256_movemask_epi8(_mm256_cmpgt_epi32(prev_drawn_max_ys, next_drawable_min_ys));
-            //for(int i = 0; i < 8; i++) {
-            //    any_prev_drawn_max_ys_gt_next_drawable_min_ys |= (prev_drawn_max_ys[i] > next_drawable_min_ys[i]);
-            //}
-
-            // TODO: vectorize
-            any_rem_x_steps_gt_zero = _mm256_movemask_epi8(_mm256_cmpgt_epi32(rem_x_steps, zero_vec));
-            //for(int i = 0; i < 8; i++) {
-            //    any_rem_x_steps_gt_zero |= (rem_x_steps[i] > 0);
-            //}
-
-            // TODO: vectorize
-            any_rem_y_steps_gt_zero = _mm256_movemask_epi8(_mm256_cmpgt_epi32(rem_y_steps, zero_vec));
-            //for(int i = 0; i < 8; i++) {
-            //    any_rem_y_steps_gt_zero |= (rem_y_steps[i] > 0);
-            //}
-
-        }
-
-        xs = _mm256_add_epi32(xs, dxs_vec);
-        
-
-
-
-    }
-    EndTimeBlock(raycast_vector_block);
-
-    //printf("max mip level of %i\n", max_mip);
 }

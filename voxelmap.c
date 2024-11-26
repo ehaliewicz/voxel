@@ -29,8 +29,6 @@ typedef struct {
 
 
 
-#define COLUMN_MAX_HEIGHT 128
-#define COLUMN_HEIGHT_SHIFT 7
 typedef struct {
     u32 colors[256];
 } column_colors;
@@ -57,6 +55,24 @@ typedef struct {
     span runs_info[128];
 } column_runs;
 
+// 16 bytes! 
+// wtf
+typedef struct {
+    u32 bmp[4]; // 4 * 32 = 128
+} column_bitmaps;
+
+void set_bit_in_bitmap(int z, column_bitmaps* ptr) {
+    int lw_idx = z / 32;
+    int bit_idx = z & 31;
+    ptr->bmp[lw_idx] |= (1 << bit_idx);
+}
+
+u8 get_bit_in_bitmap(int z, column_bitmaps* ptr) {
+    int lw_idx = z / 32;
+    int bit_idx = z & 31;
+    return ptr->bmp[lw_idx] & (1 << bit_idx);
+}
+
 // 1024 -> 10 bits
 // 1024 -> 10 bits
 // 128 -> 7 bits
@@ -71,13 +87,13 @@ column_header* columns_header_data;//[1024*1024];
 column_colors* columns_colors_data;//[1024*1024];
 
 column_runs* columns_runs_data;//[1024*1024];
-
 column_normals* columns_norm_data;//[1024*1024];
 
 
 column_header* mip_columns_header_data;//[512*512];
 column_colors* mip_columns_colors_data;//[512*512];
 column_runs* mip_columns_runs_data;//[512*512];
+
 column_normals* mip_columns_norm_data;//[512*512];
 
 static int map_data_allocated = 0;
@@ -88,10 +104,10 @@ void allocate_map_data() {
     columns_runs_data = malloc(sizeof(column_runs)*1024*1024);
     columns_norm_data = malloc(sizeof(column_normals)*1024*1024);
 
-    mip_columns_header_data = malloc(sizeof(column_header)*512*512);
-    mip_columns_colors_data = malloc(sizeof(column_colors)*512*512);
-    mip_columns_runs_data = malloc(sizeof(column_runs)*512*512);
-    mip_columns_norm_data = malloc(sizeof(column_normals)*512*512);
+    //mip_columns_header_data = malloc(sizeof(column_header)*512*512);
+    //mip_columns_colors_data = malloc(sizeof(column_colors)*512*512);
+    //mip_columns_runs_data = malloc(sizeof(column_runs)*512*512);
+    //mip_columns_norm_data = malloc(sizeof(column_normals)*512*512);
     map_data_allocated = 1;
 }
 
@@ -304,7 +320,7 @@ void voxel_set_normal(s32 x, s32 y, s32 z, f32 norm_pt1, f32 norm_pt2) {
 
 int voxel_is_solid(s32 map_x, s32 map_y, s32 map_z) {
     // TODO: maybe binary search
-    if(map_x < 0 || map_x > 511 || map_y < 0 || map_y > 511 || map_z < 0 || map_z >= (cur_map_max_height+1)) {
+    if(map_x < 0 || map_x > MAP_X_SIZE || map_y < 0 || map_y >= MAP_Y_SIZE || map_z < 0 || map_z >= (cur_map_max_height+1)) {
         return 0;
     }
 
@@ -317,6 +333,30 @@ int voxel_is_solid(s32 map_x, s32 map_y, s32 map_z) {
         int exclusive_bot = max(runs[i].top_surface_end+1, runs[i].bot_surface_end);
         if(map_z >= top && map_z < exclusive_bot) {
             return 1;
+        }
+    }
+    return 0;
+}
+
+int check_for_solid_voxel_in_aabb(s32 x, s32 y, s32 z, s32 xsize, s32 ysize, s32 zsize) {
+    for(int ty = y-ysize; ty < y+ysize+1; ty++) {
+        if(ty < 0 || ty >= MAP_Y_SIZE) {
+            return 1;
+        }
+        for(int tx = x-xsize; tx < x+xsize+1; tx++) {
+            if(tx < 0 || tx >= MAP_X_SIZE) {
+                return 1;
+            }
+            int idx = get_voxelmap_idx(tx,ty);
+            // skip empty columns
+            if(columns_header_data[idx].num_runs == 0) {
+                continue;
+            }
+            for(int tz = z-zsize; tz < z+zsize+1; tz++) {
+                if(voxel_is_solid(tx, ty, tz)) {
+                    return 1;
+                }
+            }
         }
     }
     return 0;
@@ -445,8 +485,6 @@ void set_voxel_to_surface(s32 x, s32 y, s32 z, u32 color) {
     //}
 #endif
 }
-
-
 
 
 #if 0
@@ -614,11 +652,13 @@ int load_voxlap_map(char* file, int expected_height) {
     fread(bytes, len, 1, f);
     fclose(f);
 
-    u8 *v = (u8*)bytes;
-    u8 *base = v;
+    u8 *base = (u8*)bytes;;
     int x,y,z;
+    printf("Loading map...\n");
+
+    u8 *v = (u8*)bytes;
     for (y=511; y >= 0; --y) {
-        for (x=511; x >= 0; --x) {
+        for (x=511; x >= 0; --x) { 
             
             z = 0;
             u32 idx = get_voxelmap_idx(x, y);
@@ -626,8 +666,9 @@ int load_voxlap_map(char* file, int expected_height) {
 
             span *runs = &columns_runs_data[idx].runs_info[0];
             u32 *output_color_ptr = &columns_colors_data[idx].colors[0];
+            
             int num_runs = 0;     
-
+            // parse this column
             for(;;) {
                 u32 *color;
                 int i;
@@ -648,7 +689,7 @@ int load_voxlap_map(char* file, int expected_height) {
                 for(z=top_color_start; z <= top_color_end; z++) {
                     *output_color_ptr++ = convert_voxlap_color_to_abgr(*color++);
                 }
-
+                
                 len_top = top_color_end - top_color_start + 1;
 
                 // check for end of data marker
@@ -661,10 +702,10 @@ int load_voxlap_map(char* file, int expected_height) {
                     runs[num_runs++].bot_surface_end = expected_height+1;
                     // fill empty colors
                     u32 prev_color = *(output_color_ptr-1);
-                    while(z++ <= expected_height) {
+                    while(z <= expected_height) {
                         *output_color_ptr++ = prev_color;
+                        z++;
                     }
-
                     break;
                 }
 
@@ -697,7 +738,7 @@ int load_voxlap_map(char* file, int expected_height) {
             header->num_runs = num_runs;
             header->top_y = runs[0].top_surface_start;
         }
-   }
+    }
     if(v-base != len) {
         return BAD_DIMENSIONS;
     }
@@ -723,16 +764,179 @@ u64 column_to_bitmap(int num_runs, span* spans) {
 }
 
 #define AMBIENT_OCCLUSION_RADIUS 4
+#define NORMAL_RADIUS 2
 
 #define AMBIENT_OCCLUSION_DIAMETER (AMBIENT_OCCLUSION_RADIUS*2+1)
 
 u64 surface_bitmap_array[1024*1024];
 u64 solid_bitmap_array[1024*1024];
 
+typedef struct {
+    u64 bits[4];
+} bitmap_col;
+
+void col_to_surf_bitmap(u32 voxelmap_idx, bitmap_col* bmp) {
+    column_header header = columns_header_data[voxelmap_idx];
+    span* runs = columns_runs_data[voxelmap_idx].runs_info;
+    memset(bmp->bits, 0, sizeof(bmp->bits));
+    for(int i = 0; i < header.num_runs; i++) {
+        for(int z = runs[i].top_surface_start; z < runs[i].top_surface_end+1; z++) {
+            int qw_idx = z >> 6;
+            int qw_bit = (z & 0b111111);
+            bmp->bits[qw_idx] |= (qw_bit);
+        }
+        for(int z = runs[i].bot_surface_start; z < runs[i].bot_surface_end; z++) {
+            int qw_idx = z >> 6;
+            int qw_bit = (z & 0b111111);
+            bmp->bits[qw_idx] |= (qw_bit);
+        }
+    }
+}
+
+void col_to_solid_bitmap(u32 voxelmap_idx, bitmap_col* bmp) {
+    column_header header = columns_header_data[voxelmap_idx];
+    span* runs = columns_runs_data[voxelmap_idx].runs_info;
+    memset(bmp->bits, 0, sizeof(bmp->bits));
+    for(int i = 0; i < header.num_runs; i++) {
+        for(int z = runs[i].top_surface_start; z < runs[i].bot_surface_end; z++) {
+            int qw_idx = z >> 6;
+            int qw_bit = (z & 0b111111);
+            bmp->bits[qw_idx] |= (qw_bit);
+        }
+    }
+}
+
+
+bitmap_col map_bitmaps[512*512];
+
+void light_map_bitmap() {
+    
+    // build columns for entire map first
+
+
+    for(int y = 0; y < 512; y++) {
+        for(int x = 0; x < 512; x++) {
+            col_to_solid_bitmap(get_voxelmap_idx(x, y), &map_bitmaps[y*512+x]);
+        }
+    }
+
+
+    for(int y = 0; y < 512; y++) {
+        int uy = y == 0 ? 511 : y-1;
+        int dy = y == 511 ? 0 : y+1;
+        for(int x = 0; x < 512; x++) {
+            int lx = x == 0 ? 511 : x-1;
+            int rx = x == 511 ? 0 : x+1;
+
+            bitmap_col center_col;
+            col_to_surf_bitmap(get_voxelmap_idx(x,y), &center_col);
+
+            for(int center_qw_idx = 0; center_qw_idx < 4; center_qw_idx++) {
+                u64 qw = center_col.bits[center_qw_idx];
+                int offset = center_qw_idx*64;
+                while(qw) {
+                    int set_bit = __builtin_ffsll(qw)-1;
+                    int z = set_bit+offset;
+                    
+                    int solid_cells = 0;
+                    int samples = 0;
+
+
+                        
+                    f32 norm_x = 0.0;
+                    f32 norm_y = 0.0;
+                    f32 norm_z = 0.0;
+
+                    // check neighborhood
+                    for(int yy = -AMBIENT_OCCLUSION_RADIUS; yy <= AMBIENT_OCCLUSION_RADIUS; yy++) {
+                        int ty = y+yy;
+                        if(ty < 0 || ty > 511) { continue; }
+                        for(int xx = -AMBIENT_OCCLUSION_RADIUS; xx <= AMBIENT_OCCLUSION_RADIUS; xx++) {
+                            int tx = x+xx;
+                            if(tx < 0 || tx > 511) { continue; }
+
+                            for(int zz = -AMBIENT_OCCLUSION_RADIUS;  zz <= AMBIENT_OCCLUSION_RADIUS; zz++) { 
+
+                                int tz = z+zz;
+
+                                u8 valid_ao_sample = (tx != x && ty != y && tz != z) && (tz <= z);
+
+                                samples += (valid_ao_sample ? 1 : 0);
+                                u8 out_of_bounds = (tx < 0 || tx >= 512 || ty < 0 || ty >= 512 || tz < 0 || tz >= (cur_map_max_height+1));
+
+                                int bitmap_column_idx = ty*512+tx;
+                                bitmap_col test_bitmap_col = map_bitmaps[bitmap_column_idx];
+                                int test_z_qw_idx = tz / 64;
+                                int test_z_bit_idx = tz & 0b111111;
+
+                                u8 cell_is_solid = test_bitmap_col.bits[test_z_qw_idx] & (1<<test_z_bit_idx);//voxel_is_solid(tx,ty,tz); 
+                                solid_cells += ((valid_ao_sample && cell_is_solid) ? 1 : 0);
+
+                                
+                                norm_x += cell_is_solid ? -xx : 0.0;
+                                norm_y += cell_is_solid ? -yy : 0.0;
+                                norm_z += cell_is_solid ? -zz : 0.0;
+                                
+                            }
+                        }
+                    }
+                    if(norm_x == 0 && norm_y == 0 && norm_z == 0) {
+                        norm_z = -1;
+                    }
+
+                    
+                    // 0 -> no filled surrounding voxels, 1 -> all filled surrounding voxels
+                    // but divide in 2 to reduce the effect, so the effect is more subtle
+                    f32 zero_to_one; 
+                    if(samples == 0) {
+                        zero_to_one = 0;
+                    } else {
+                        zero_to_one = ((solid_cells*1.0f)/(f32)samples);
+                    }
+
+                    f32 one_to_zero = 1-zero_to_one; // 0-> all filled surrounding voxels, 0.5-> no filled surrounding voxels
+
+                    // each albedo has 6 AO bits, so use up all 6 of them
+                    f32 one_to_zero_scaled = 63.0 * one_to_zero; // scale from 0->.5 to 0-63
+
+
+                    f32 len = magnitude_vector(norm_x, norm_y, norm_z);
+                    f32 fnorm_x = norm_x / len;
+                    f32 fnorm_y = norm_y / len;
+                    f32 fnorm_z = norm_z / len;
+                    float2 norm = encode_norm(fnorm_x, fnorm_y, fnorm_z);
+                    voxel_set_normal(x, y, z, norm.x, norm.y);
+
+                    //f32 i = ((((fnorm_y * .5) + fnorm_z) * 64.0 + 103.5)/256.0);
+
+
+                    u8 one_to_zero_ao_bits = ((u8)floorf(one_to_zero_scaled));
+                    u32 base_color = voxel_get_color(x, y, z);
+                    u8 alpha_bits = (base_color>>24)&0b11;
+                    //u8 ao_and_alpha_byte = (one_to_zero_ao_bits<<2) | alpha_bits;
+                    long r, g, b;
+
+                    r = min(((base_color & 0xFF)),255);
+                    g = min((((base_color >> 8) & 0xFF)),255);
+                    b = min((((base_color >> 16) & 0xFF)),255);
+
+                    u8 ao_and_alpha_byte = (one_to_zero_ao_bits<<2) | alpha_bits;
+                    voxel_set_color(x, y, z, ((ao_and_alpha_byte<<24)|(b<<16)|(g<<8)|r));
+
+
+                    // clear bit to prevent infinite loop :)
+                    qw ^= (1 << set_bit);
+                }
+            }
+
+        }
+    }
+    
+}
+
 //#define NORMAL_RADIUS 6
 void light_map(int min_x, int min_y, int max_x, int max_y) {
-
-    for(int y = min_y; y <= max_y; y++) {
+    for(int y = min_y; y < max_y; y++) {
         for(int x = min_x; x <= max_x; x++) {
             u32 voxelmap_idx = get_voxelmap_idx(x, y);
             column_header* header = &columns_header_data[voxelmap_idx];
@@ -791,9 +995,7 @@ void light_map(int min_x, int min_y, int max_x, int max_y) {
                                 u32 test_voxelmap_idx = get_voxelmap_idx(tx, ty);
                                 span* cur_spans = columns_runs_data[test_voxelmap_idx].runs_info;
                                 int test_span_num_runs = columns_header_data[test_voxelmap_idx].num_runs;
-                                //if(test_span_num_runs > 2)  {
-                                //    printf("whoa!\n"); 
-                                //}
+
                                 int cur_span_idx = 0;
 
                                 // find first span that ends on the current test z ?
@@ -827,10 +1029,10 @@ void light_map(int min_x, int min_y, int max_x, int max_y) {
                                     //u8 cell_is_solid = voxel_is_solid(tx,ty,tz);
                                     // && voxel_is_solid(tx, ty, tz);
                                     solid_cells += ((valid_ao_sample && cell_is_solid) ? 1 : 0);
-
-                                    norm_x += cell_is_solid ? xx : 0.0;
-                                    norm_y += cell_is_solid ? yy : 0.0;
-                                    norm_z += cell_is_solid ? zz : 0.0;
+                                    
+                                    norm_x += cell_is_solid ? -xx : 0.0;
+                                    norm_y += cell_is_solid ? -yy : 0.0;
+                                    norm_z += cell_is_solid ? -zz : 0.0;
                                     
                                     cur_span_idx += (tz >= cur_spans[cur_span_idx].bot_surface_end-1 ? 1 : 0); // is this right?? what was the -1 for -1);
                                 }
@@ -1145,23 +1347,54 @@ void load_map(s32 map_idx) {
     //exit(1);
 
 
-    thread_params parms[NUM_THREADS];
-    for(int i = 0; i < NUM_THREADS; i++) {
+    thread_params parms[NUM_LIGHT_MAP_THREADS];
+    for(int i = 0; i < NUM_LIGHT_MAP_THREADS; i++) {
         parms[i].finished = 0;
         parms[i].min_x = (i == 0) ? 0 : parms[i-1].max_x; //min_x + (draw_dx*i/RAYCAST_THREADS);
-        parms[i].max_x = (i == NUM_THREADS-1) ? 511 : (parms[i].min_x + (511/NUM_THREADS));
+        parms[i].max_x = (i == NUM_LIGHT_MAP_THREADS-1) ? 511 : (parms[i].min_x + (511/NUM_LIGHT_MAP_THREADS));
         parms[i].min_y = 0;
         parms[i].max_y = 511;
     }
-    render_pool rp = {
-        .num_jobs = NUM_THREADS,
+    job_pool rp = {
+        .num_jobs = NUM_LIGHT_MAP_THREADS,
         .func = light_map_wrapper,
         .raw_func = light_map,
         .parms = parms
     };
     start_pool(pool, &rp);
     wait_for_render_pool_to_finish(&rp);
-    
+    //light_map_bitmap();
+#define DUPLICATE_MAP
+#ifdef DUPLICATE_MAP
+    int quadrant_offsets[3][2] = {{0,512},{512,0},{512,512}};
+    for(int quadrant = 0; quadrant < 3; quadrant++) {
+        for(int y = 0; y < 512; y++) {
+            for(int x = 0; x < 512; x++) {
+                // copy from source to output quadrant
+             
+                u32 src_idx = get_voxelmap_idx(x, y);
+                u32 dst_idx = get_voxelmap_idx(x+quadrant_offsets[quadrant][0], y+quadrant_offsets[quadrant][1]);
+
+                u32* src_color_ptr = &columns_colors_data[src_idx].colors[0];
+                span* src_runs = &columns_runs_data[src_idx].runs_info[0];
+                column_header* src_header = &columns_header_data[src_idx];
+
+                u32* dst_color_ptr = &columns_colors_data[dst_idx].colors[0];
+                span* dst_runs = &columns_runs_data[dst_idx].runs_info[0];
+                column_header* dst_header = &columns_header_data[dst_idx];
+
+                columns_runs_data[dst_idx] = columns_runs_data[src_idx];
+                columns_header_data[dst_idx] = columns_header_data[src_idx];
+                columns_colors_data[dst_idx] = columns_colors_data[src_idx];
+                columns_norm_data[dst_idx] = columns_norm_data[src_idx];
+                
+                
+
+            }
+        }
+    }
+#endif 
+
     //profile_block light_map_block;
     //TimeBlock(light_map_block, "light map");
     //light_map(0, 0, 511, 511);

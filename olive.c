@@ -398,12 +398,13 @@ typedef struct {
     size_t width;
     size_t height;
     size_t stride;
+    int scale;
 } Olivec_Canvas;
 
 #define OLIVEC_CANVAS_NULL ((Olivec_Canvas) {0})
 #define OLIVEC_PIXEL(oc, x, y) (oc).pixels[(y)*(oc).stride + (x)]
 
-OLIVECDEF Olivec_Canvas olivec_canvas(uint32_t *pixels, size_t width, size_t height, size_t stride);
+OLIVECDEF Olivec_Canvas olivec_canvas(uint32_t *pixels, size_t width, size_t height, size_t stride, size_t scale);
 OLIVECDEF Olivec_Canvas olivec_subcanvas(Olivec_Canvas oc, int x, int y, int w, int h);
 OLIVECDEF bool olivec_in_bounds(Olivec_Canvas oc, int x, int y);
 OLIVECDEF void olivec_blend_color(uint32_t *c1, uint32_t c2);
@@ -457,13 +458,14 @@ OLIVECDEF bool olivec_normalize_rect(int x, int y, int w, int h,
 
 #ifdef OLIVEC_IMPLEMENTATION
 
-OLIVECDEF Olivec_Canvas olivec_canvas(uint32_t *pixels, size_t width, size_t height, size_t stride)
+OLIVECDEF Olivec_Canvas olivec_canvas(uint32_t *pixels, size_t width, size_t height, size_t stride, size_t scale)
 {
     Olivec_Canvas oc = {
         .pixels = pixels,
         .width  = width,
         .height = height,
         .stride = stride,
+        .scale = scale,
     };
     return oc;
 }

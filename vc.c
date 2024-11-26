@@ -33,7 +33,7 @@
 #define OLIVEC_IMPLEMENTATION
 #include "olive.c"
 
-Olivec_Canvas vc_render(float dt);
+Olivec_Canvas vc_render(double dt);
 
 #ifndef VC_PLATFORM
 #error "Please define VC_PLATFORM macro"
@@ -50,16 +50,18 @@ Olivec_Canvas vc_render(float dt);
 
 #define return_defer(value) do { result = (value); goto defer; } while (0)
 
-static SDL_Texture *vc_sdl_texture = NULL;
-static size_t vc_sdl_actual_width = 0;
-static size_t vc_sdl_actual_height = 0;
 
-static bool vc_sdl_resize_texture(SDL_Renderer *renderer, size_t new_width, size_t new_height)
-{
+// internal SDL texture
+static SDL_Texture *vc_sdl_texture = NULL;
+static size_t vc_sdl_internal_width = 0;
+static size_t vc_sdl_internal_height = 0;
+
+static bool vc_sdl_resize_texture(SDL_Renderer *renderer, size_t new_width, size_t new_height) {
+    printf("resizing sdl framebuffer, in hardware, texture is %i, %i\n", new_width, new_height);
     if (vc_sdl_texture != NULL) SDL_DestroyTexture(vc_sdl_texture);
-    vc_sdl_actual_width = new_width;
-    vc_sdl_actual_height = new_height;
-    vc_sdl_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, vc_sdl_actual_width, vc_sdl_actual_height);
+    vc_sdl_internal_width = new_width;
+    vc_sdl_internal_height = new_height;
+    vc_sdl_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, vc_sdl_internal_width, vc_sdl_internal_height);
     if (vc_sdl_texture == NULL) return false;
     return true;
 }
@@ -67,6 +69,12 @@ static bool vc_sdl_resize_texture(SDL_Renderer *renderer, size_t new_width, size
 void handle_keydown(SDL_KeyboardEvent key);
 void handle_keyup(SDL_KeyboardEvent key);
 
+
+double GetTicks() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double) ts.tv_sec + ts.tv_nsec / 1000000000.0;
+}
 
 int main(int argc, char** argv)
 {
@@ -85,7 +93,8 @@ int main(int argc, char** argv)
         if (renderer == NULL) return_defer(1);
 
         //SDL_GL_SetSwapInterval(0);
-        Uint32 prev = SDL_GetTicks();
+        double prev = SDL_GetTicks();
+        double prevticks = GetTicks();
         bool pause = false;
 
         
@@ -93,10 +102,12 @@ int main(int argc, char** argv)
 
         for (;;) {
             // Compute Delta Time
-            Uint32 curr = SDL_GetTicks();
+            double curr = SDL_GetTicks();
+            double currticks = GetTicks();
             float dt = (curr - prev)/1000.f;
+            double double_dt = (currticks - prevticks);
             prev = curr;
-
+            prevticks = currticks;
             int mouse_x, mouse_y;
             u32 mouse_state = SDL_GetMouseState(&mouse_x, &mouse_y);
             update_mouse_pos(mouse_x, mouse_y);
@@ -154,22 +165,26 @@ int main(int argc, char** argv)
 
 
 
-            SDL_Rect window_rect = {0, 0, vc_sdl_actual_width, vc_sdl_actual_height};
+            SDL_Rect window_rect = {0, 0, vc_sdl_internal_width, vc_sdl_internal_height};
 
             if (!pause) {
                 // Render the texture
-                Olivec_Canvas oc_src = vc_render(dt);
-                if (oc_src.width != vc_sdl_actual_width || oc_src.height != vc_sdl_actual_height) {
+                Olivec_Canvas oc_src = vc_render(double_dt);
+                size_t output_width = oc_src.width*oc_src.scale;
+                size_t output_height = oc_src.height*oc_src.scale;
+                if (oc_src.width != vc_sdl_internal_width || oc_src.height != vc_sdl_internal_height) {
                     if (!vc_sdl_resize_texture(renderer, oc_src.width, oc_src.height)) return_defer(1);
-                    SDL_SetWindowSize(window, vc_sdl_actual_width, vc_sdl_actual_height);
+                    SDL_SetWindowSize(window, output_width, output_height);
+                    window_rect.w = vc_sdl_internal_width;
+                    window_rect.h = vc_sdl_internal_height;
                 }
                 void *pixels_dst;
                 int pitch;
                 if (SDL_LockTexture(vc_sdl_texture, &window_rect, &pixels_dst, &pitch) < 0) return_defer(1);
-                for (size_t y = 0; y < vc_sdl_actual_height; ++y) {
+                for (size_t y = 0; y < vc_sdl_internal_height; ++y) {
                     // TODO: it would be cool if Olivec_Canvas supported pitch in bytes instead of pixels
                     // It would be more flexible and we could draw on the locked texture memory directly
-                    memcpy((char*)pixels_dst + y*pitch, oc_src.pixels + y*vc_sdl_actual_width, vc_sdl_actual_width*sizeof(uint32_t));
+                    memcpy((char*)pixels_dst + y*pitch, oc_src.pixels + y*vc_sdl_internal_width, vc_sdl_internal_width*sizeof(uint32_t));
                 }
                 SDL_UnlockTexture(vc_sdl_texture);
             }
@@ -177,7 +192,7 @@ int main(int argc, char** argv)
             // Display the texture
             if (SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0) < 0) return_defer(1);
             //if (SDL_RenderClear(renderer) < 0) return_defer(1);
-            if (SDL_RenderCopy(renderer, vc_sdl_texture, &window_rect, &window_rect) < 0) return_defer(1);
+            if (SDL_RenderCopy(renderer, vc_sdl_texture, &window_rect, NULL) < 0) return_defer(1);
             SDL_RenderPresent(renderer);
 
             

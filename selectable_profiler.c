@@ -80,12 +80,11 @@ void end_profile_block(profile_block blk) {
     /* NOTE(casey): This write happens every time solely because there is no
         straightforward way in C++ to have the same ease-of-use. In a better programming
         language, it would be simple to have the anchor points gathered and labeled at compile
-        time, and this repetative write would be eliminated. */
+        time, and this repetitive write would be eliminated. */
     Anchor->Label = blk.Label;
 }
 
 void end_counted_profile_block(profile_block blk, int count) {
-    //printf("exit!\n");
     u64 Elapsed = ReadCPUTimer() - blk.StartTSC;
     GlobalProfilerParent = blk.ParentIndex;
 
