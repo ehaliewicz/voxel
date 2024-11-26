@@ -29,7 +29,7 @@
 #else
 #define MAX_NUM_THREADS 12
 #define NUM_LIGHT_MAP_THREADS 12
-#define NUM_RAYCAST_THREADS 12
+#define NUM_RAYCAST_THREADS 1
 #define NUM_ROTATE_LIGHT_AND_BLEND_THREADS 12
 #endif
 
@@ -212,7 +212,7 @@ static int fogmode = FOG;
 static int lighting = STATIC_LIGHTING;
 static int transparency = 0;
 static int ambient_occlusion = 1;
-static int vectorized_rendering = 0;
+static int render_6dof = 0;
 
 static int view = VIEW_STANDARD;
 static int gravmode = 1;
@@ -223,7 +223,7 @@ static int double_pixels = 2;
 const int output_widths[] = {2560,1920,1280,1024};
 const int output_heights[] = {1440,1080,720,768};
 
-int cur_output_size_idx = 2;
+int cur_output_size_idx = 3;
 
 #define OUTPUT_WIDTH (output_widths[cur_output_size_idx])
 #define OUTPUT_HEIGHT (output_heights[cur_output_size_idx])
@@ -342,7 +342,7 @@ void handle_keyup(SDL_KeyboardEvent key) {
             if(view > 2) { view = 0;}
             break;
         case SDL_SCANCODE_B:
-            vectorized_rendering = !vectorized_rendering;
+            render_6dof = !render_6dof;
             break;
         case SDL_SCANCODE_F:
             fogmode++;
@@ -363,7 +363,7 @@ void handle_keyup(SDL_KeyboardEvent key) {
         // change output resolution, window size
         case SDL_SCANCODE_Y: do {
             cur_output_size_idx++;
-            if(cur_output_size_idx > 2) { cur_output_size_idx = 0; }
+            if(cur_output_size_idx >= (sizeof(output_widths)/sizeof(output_widths[0]))) { cur_output_size_idx = 0; }
 
             if(double_pixels == 1) {
                 render_width = OUTPUT_WIDTH/2;
@@ -956,6 +956,13 @@ thread_pool_function(raycast_scalar_wrapper, arg_var)
 	InterlockedIncrement64(&tp->finished);
 }
 
+//thread_pool_function(raycast_6dof_wrapper, arg_var)
+//{
+//	thread_params* tp = (thread_params*)arg_var;
+//    raycast_6dof(tp->min_x, tp->min_y, tp->max_x, tp->max_y);
+//	InterlockedIncrement64(&tp->finished);
+//}
+
 thread_pool_function(fill_empty_entries_wrapper, arg_var)
 {
 	thread_params* tp = (thread_params*)arg_var;
@@ -1144,70 +1151,6 @@ vect4d vect3d_to_4d(vect3d a) {
     return res;
 }
 
-typedef struct {
-    f32 els[4][4];
-} mat44;
-
-void mat44_mult(mat44* src1, mat44* src2, mat44* dest) {
-    dest->els[0][0] = src1->els[0][0] * src2->els[0][0] + src1->els[0][1] * src2->els[1][0] + src1->els[0][2] * src2->els[2][0] + src1->els[0][3] * src2->els[3][0]; 
-    dest->els[0][1] = src1->els[0][0] * src2->els[0][1] + src1->els[0][1] * src2->els[1][1] + src1->els[0][2] * src2->els[2][1] + src1->els[0][3] * src2->els[3][1]; 
-    dest->els[0][2] = src1->els[0][0] * src2->els[0][2] + src1->els[0][1] * src2->els[1][2] + src1->els[0][2] * src2->els[2][2] + src1->els[0][3] * src2->els[3][2]; 
-    dest->els[0][3] = src1->els[0][0] * src2->els[0][3] + src1->els[0][1] * src2->els[1][3] + src1->els[0][2] * src2->els[2][3] + src1->els[0][3] * src2->els[3][3]; 
-    dest->els[1][0] = src1->els[1][0] * src2->els[0][0] + src1->els[1][1] * src2->els[1][0] + src1->els[1][2] * src2->els[2][0] + src1->els[1][3] * src2->els[3][0]; 
-    dest->els[1][1] = src1->els[1][0] * src2->els[0][1] + src1->els[1][1] * src2->els[1][1] + src1->els[1][2] * src2->els[2][1] + src1->els[1][3] * src2->els[3][1]; 
-    dest->els[1][2] = src1->els[1][0] * src2->els[0][2] + src1->els[1][1] * src2->els[1][2] + src1->els[1][2] * src2->els[2][2] + src1->els[1][3] * src2->els[3][2]; 
-    dest->els[1][3] = src1->els[1][0] * src2->els[0][3] + src1->els[1][1] * src2->els[1][3] + src1->els[1][2] * src2->els[2][3] + src1->els[1][3] * src2->els[3][3]; 
-    dest->els[2][0] = src1->els[2][0] * src2->els[0][0] + src1->els[2][1] * src2->els[1][0] + src1->els[2][2] * src2->els[2][0] + src1->els[2][3] * src2->els[3][0]; 
-    dest->els[2][1] = src1->els[2][0] * src2->els[0][1] + src1->els[2][1] * src2->els[1][1] + src1->els[2][2] * src2->els[2][1] + src1->els[2][3] * src2->els[3][1]; 
-    dest->els[2][2] = src1->els[2][0] * src2->els[0][2] + src1->els[2][1] * src2->els[1][2] + src1->els[2][2] * src2->els[2][2] + src1->els[2][3] * src2->els[3][2]; 
-    dest->els[2][3] = src1->els[2][0] * src2->els[0][3] + src1->els[2][1] * src2->els[1][3] + src1->els[2][2] * src2->els[2][3] + src1->els[2][3] * src2->els[3][3]; 
-    dest->els[3][0] = src1->els[3][0] * src2->els[0][0] + src1->els[3][1] * src2->els[1][0] + src1->els[3][2] * src2->els[2][0] + src1->els[3][3] * src2->els[3][0]; 
-    dest->els[3][1] = src1->els[3][0] * src2->els[0][1] + src1->els[3][1] * src2->els[1][1] + src1->els[3][2] * src2->els[2][1] + src1->els[3][3] * src2->els[3][1]; 
-    dest->els[3][2] = src1->els[3][0] * src2->els[0][2] + src1->els[3][1] * src2->els[1][2] + src1->els[3][2] * src2->els[2][2] + src1->els[3][3] * src2->els[3][2]; 
-    dest->els[3][3] = src1->els[3][0] * src2->els[0][3] + src1->els[3][1] * src2->els[1][3] + src1->els[3][2] * src2->els[2][3] + src1->els[3][3] * src2->els[3][3]; 
-}
-
-vect3d mat44_mult_vec4(vect4d* src1, mat44* src2) {
-    vect3d res;
-    res.x = src2->els[0][0] * src1->x + src2->els[1][0] * src1->y + src2->els[2][0] * src1->z + src2->els[3][0] * src1->w;
-    res.y = src2->els[0][1] * src1->x + src2->els[1][1] * src1->y + src2->els[2][1] * src1->z + src2->els[3][1] * src1->w;
-    res.z = src2->els[0][2] * src1->x + src2->els[1][2] * src1->y + src2->els[2][2] * src1->z + src2->els[3][2] * src1->w;
-    return res;
-}
-
-void get_camera_mat44(f32 pitch_ang, f32 roll_ang, f32 yaw_ang, mat44* res) {
-    f32 cp = cos(pitch_ang);
-    f32 sp = sin(pitch_ang);
-    f32 cy = cos(yaw_ang);
-    f32 sy = sin(yaw_ang);
-    f32 cr = cos(roll_ang);
-    f32 sr = sin(roll_ang);
-    mat44 pitch = (mat44){.els = { 
-        {1.0f, 0.0f, 0.0f, 0.0f},
-        //{1.0f, cp, sp, 0.0f},
-        //{1.0f, -sp, cp, 0.0f},
-        {0.0f, cp, sp, 0.0f},
-        {0.0f, -sp, cp, 0.0f},
-        {0.0f, 0.0f, 0.0f, 1.0f},
-    }};
-    mat44 yaw = (mat44){.els = {
-        {cy, 0.0f, -sy,  0.0f},
-        {0.0f, 1.0f, 0.0f, 0.0f},
-        {sy, 0.0f, cy, 0.0f},
-        {0.0f, 0.0f, 0.0f, 1.0f},
-    }};
-    mat44 roll = (mat44){.els = {
-        {cr, sr, 0.0f, 0.0f},
-        {-sr, cr, 0.0f, 0.0f},
-        {0.0f, 0.0f, 1.0f, 0.0f},
-        {0.0f, 0.0f, 0.0f, 1.0f}
-    }};
-
-    mat44 inter;
-    mat44_mult(&roll, &yaw, &inter);
-    mat44_mult(&inter, &pitch, res);
-}
-    
 void pix(int x, int y, uint32_t color) {
     u32 fb_idx = fb_swizzle(x, y);
     albedo_buffer[fb_idx] = color;  
@@ -1319,6 +1262,7 @@ typedef enum {
     CLIP_IN
 } state;
  
+//#include "raycast_6dof.c"
 
 Olivec_Canvas vc_render(double dt) {
     handle_mouse_input(dt);
@@ -1426,8 +1370,8 @@ Olivec_Canvas vc_render(double dt) {
             .num_jobs = NUM_RAYCAST_THREADS,
             .parms = parms
         };
-            rp.func = raycast_scalar_wrapper,
-            rp.raw_func = raycast_scalar,
+            rp.func = render_6dof ? raycast_scalar_wrapper : raycast_scalar_wrapper,
+            rp.raw_func = render_6dof ? raycast_scalar : raycast_scalar,
         
         //raycast_scalar(min_x, min_y, max_x, max_y);
         start_pool(pool, &rp);
@@ -1835,7 +1779,7 @@ Olivec_Canvas vc_render(double dt) {
         DEBUG_PRINT_TEXT("amb. occlusion: %s", ambient_occlusion ? "enabled" : "disabled");
         DEBUG_PRINT_TEXT("fog:            %s", fogmode ? "enabled" : "disabled");
         DEBUG_PRINT_TEXT("transparency:   %s", transparency ? "enabled" : "disabled");
-        DEBUG_PRINT_TEXT("render mode:    %s", vectorized_rendering ? "vector pre-skip" : "scalar");
+        DEBUG_PRINT_TEXT("render mode:    %s", render_6dof ? "6DOF" : "5DOF");
         DEBUG_PRINT_TEXT("view mode:      %s", view_mode_strs[view]);
         DEBUG_PRINT_TEXT("render resolution: %ix%i", max_x-min_x, (max_y+1)-min_y);
         DEBUG_PRINT_TEXT("output resolution: %ix%i", OUTPUT_WIDTH, OUTPUT_HEIGHT);
@@ -2521,11 +2465,11 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             u32 voxelmap_idx = get_voxelmap_idx(map_x, map_y);
 
 
-            int mip = invz >= 1.0 ? 0 : ceilf(1.0/invz);
-            mip = min(1, mip);
-            u32 mip_map_x = (map_x >> mip);
-            u32 mip_map_y = (map_y >> mip);
-            u32 mip_voxelmap_idx = get_voxelmap_idx(mip_map_x, mip_map_y);
+            //int mip = invz >= 1.0 ? 0 : ceilf(1.0/invz);
+            //mip = min(1, mip);
+            //u32 mip_map_x = (map_x >> mip);
+            //u32 mip_map_y = (map_y >> mip);
+            //u32 mip_voxelmap_idx = get_voxelmap_idx(mip_map_x, mip_map_y);
             
             column_header* header = &columns_header_data[voxelmap_idx];
 
