@@ -111,7 +111,13 @@ int main(int argc, char** argv)
     {
         if (SDL_Init(SDL_INIT_VIDEO) < 0) return_defer(1);
         
-        window = SDL_CreateWindow("Voxworld", 40, 40, OUTPUT_WIDTH, OUTPUT_HEIGHT, SDL_WINDOW_MOUSE_CAPTURE);
+        window = SDL_CreateWindow("Voxworld", 40, 40, OUTPUT_WIDTH, OUTPUT_HEIGHT, 0);//, SDL_WINDOW_MOUSE_CAPTURE);
+        if(SDL_SetRelativeMouseMode(SDL_TRUE) == -1) {
+            printf("wtf?!");
+            exit(1);
+        }
+        SDL_ShowCursor(0);
+
         if (window == NULL) return_defer(1);
 
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
@@ -124,6 +130,7 @@ int main(int argc, char** argv)
 
         
 
+        int mouse_x, mouse_y;
 
         for (;;) {
             // Compute Delta Time
@@ -133,10 +140,18 @@ int main(int argc, char** argv)
             double double_dt = (currticks - prevticks);
             prev = curr;
             prevticks = currticks;
-            int mouse_x, mouse_y;
-            u32 mouse_state = SDL_GetMouseState(&mouse_x, &mouse_y);
-            update_mouse_pos(mouse_x, mouse_y);
-
+            
+            u32 mouse_state;
+            if(mouse_captured) {
+                int rel_mouse_x, rel_mouse_y;
+                mouse_state = SDL_GetRelativeMouseState(&rel_mouse_x, &rel_mouse_y);
+                mouse_x += rel_mouse_x;
+                mouse_y += rel_mouse_y;
+                update_mouse_pos(mouse_x, mouse_y);
+            } else {
+                mouse_state = SDL_GetMouseState(&mouse_x, &mouse_y);
+                update_mouse_pos(mouse_x, mouse_y);
+            }
             if(SDL_BUTTON(1) & mouse_state) {
                 handle_left_mouse_down(); 
             } else {

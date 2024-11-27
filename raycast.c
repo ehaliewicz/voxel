@@ -411,7 +411,11 @@ void handle_keyup(SDL_KeyboardEvent key) {
         case SDL_SCANCODE_ESCAPE: do {
             if(mouse_captured) {
                 mouse_captured = 0;
-                SDL_CaptureMouse(SDL_FALSE);
+                //SDL_CaptureMouse(SDL_FALSE);
+                //SDL_SetRelativeMouseMode(SDL_FALSE);
+                //int err = SDL_CaptureMouse(SDL_TRUE);
+                SDL_SetRelativeMouseMode(SDL_FALSE);
+                //SDL_ShowCursor(0);
                 SDL_ShowCursor(1);
             }
         } while(0);
@@ -611,7 +615,8 @@ void handle_left_mouse_down() {
         capt_mouse_y = cur_mouse_y;
         printf("capturing mouse at %i,%i\n", capt_mouse_x, capt_mouse_y);
         mouse_captured = 1;
-        int err = SDL_CaptureMouse(SDL_TRUE);
+        //int err = SDL_CaptureMouse(SDL_TRUE);
+        SDL_SetRelativeMouseMode(SDL_TRUE);
         SDL_ShowCursor(0);
     }
 }

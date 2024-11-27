@@ -657,9 +657,6 @@ int load_voxlap_map(char* file, int expected_height) {
     printf("Loading map...\n");
 
     u8 *v = (u8*)bytes;
-    for (y=511; y >= 0; --y) {
-        for (x=511; x >= 0; --x) { 
-            
     for (y=0; y < 512; y++) {
         int yy = y*2;
         for (x=511; x >= 0; x--) { 
