@@ -341,11 +341,11 @@ int voxel_is_solid(s32 map_x, s32 map_y, s32 map_z) {
 int check_for_solid_voxel_in_aabb(s32 x, s32 y, s32 z, s32 xsize, s32 ysize, s32 zsize) {
     for(int ty = y-ysize; ty < y+ysize+1; ty++) {
         if(ty < 0 || ty >= MAP_Y_SIZE) {
-            return 1;
+            return 0;
         }
         for(int tx = x-xsize; tx < x+xsize+1; tx++) {
             if(tx < 0 || tx >= MAP_X_SIZE) {
-                return 1;
+                return 0;
             }
             int idx = get_voxelmap_idx(tx,ty);
             // skip empty columns
@@ -660,6 +660,10 @@ int load_voxlap_map(char* file, int expected_height) {
     for (y=511; y >= 0; --y) {
         for (x=511; x >= 0; --x) { 
             
+    for (y=0; y < 512; y++) {
+        int yy = y*2;
+        for (x=511; x >= 0; x--) { 
+            int xx = x*2;
             z = 0;
             u32 idx = get_voxelmap_idx(x, y);
             column_header *header = &columns_header_data[idx];
@@ -891,7 +895,7 @@ void light_map_bitmap() {
                     if(samples == 0) {
                         zero_to_one = 0;
                     } else {
-                        zero_to_one = ((solid_cells*1.0f)/(f32)samples);
+                        zero_to_one = ((solid_cells*.75f)/(f32)samples);
                     }
 
                     f32 one_to_zero = 1-zero_to_one; // 0-> all filled surrounding voxels, 0.5-> no filled surrounding voxels

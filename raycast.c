@@ -109,11 +109,11 @@ static __m256i get_swizzled_map_idx_256(__m256i x, __m256i y) {
 
 }
 
-f32 pos_x = 6.52f;
-f32 pos_y = 16.23f;
-f32 dir_x = 0.373f;
-f32 dir_y = 0.927f;
-f32 pos_z = 15.0f;
+f32 pos_x = 0.0f;
+f32 pos_y = 0.0f;
+f32 dir_x = 1.0f;
+f32 dir_y = 0.0f;
+f32 pos_z = 0.0f; //15.0f;
 //static f32 height = 240.0;
 
 float deg_to_rad(float degrees) {
@@ -123,8 +123,8 @@ float deg_to_rad(float degrees) {
 f32 desired_fov_degrees = 120;
 
 
-f32 plane_x = 1.606f;// = 0.0;
-f32 plane_y = -0.646255f;// = -1.20;
+f32 plane_x = 0.0;
+f32 plane_y = -1.20;
 
 static int plane_parameters_setup = 0;
 
@@ -158,6 +158,7 @@ f32 mouseroll = 0;
 
 
 f32 forwardbackward = 0;
+int sprint = 0;
 f32 leftright = 0;
 f32 strafe = 0;
 f32 updown = 0;
@@ -217,19 +218,19 @@ static int render_6dof = 0;
 static int view = VIEW_STANDARD;
 static int gravmode = 1;
 
-static int double_pixels = 2;
+static int double_pixels = 1;
 
 
 const int output_widths[] = {2560,1920,1280,1024};
 const int output_heights[] = {1440,1080,720,768};
 
-int cur_output_size_idx = 3;
+u32 cur_output_size_idx = 2;
 
 #define OUTPUT_WIDTH (output_widths[cur_output_size_idx])
 #define OUTPUT_HEIGHT (output_heights[cur_output_size_idx])
 
-int render_width = 1280/4;//1920/2; 
-int render_height = 720/4;//1080/2;
+int render_width = 1280/2;//1920/2; 
+int render_height = 720/2;//1080/2;
 f32 aspect_ratio = (1280/2.0)/(720/2.0); //(1920/2.0)/(1080/2.0);
 
 static int swizzled = 0;
@@ -322,6 +323,9 @@ void handle_keyup(SDL_KeyboardEvent key) {
             break;
         case SDL_SCANCODE_D: 
             strafe = 0;
+            break;
+        case SDL_SCANCODE_LSHIFT:
+            sprint = 0;
             break;
         case SDL_SCANCODE_Z:
             updown = 0;
@@ -445,6 +449,9 @@ void handle_keydown(SDL_KeyboardEvent key) {
         case SDL_SCANCODE_X:
             updown = +1.0;
             break;
+        case SDL_SCANCODE_LSHIFT:
+            sprint = 1;
+            break;
     }
 }
 
@@ -452,29 +459,21 @@ void handle_keydown(SDL_KeyboardEvent key) {
 int falling = 1;
 
 void handle_input(f32 dt) {
-
+    if(!map_loaded) { return ;}
     int head_margin = 1;
     int knee_height = 2;
     int eye_height = 4;
 
-    if(0) { //gravmode && falling) {
+    if(gravmode) {
         int collide_z = 0;
-        f32 contact_point = pos_z+eye_height;
-        f32 new_world_pos_z = contact_point+.05*dt;
-           
-        for(int x = pos_x-1; x < pos_x+2; x++) {
-            for(int y = pos_y-1; y < pos_y+2; y++) {
-                for(int z = new_world_pos_z; z < new_world_pos_z+1; z++) {
+        f32 new_world_pos_z = pos_z+15*dt;
+        f32 contact_point = new_world_pos_z+eye_height;
 
-                    if(voxel_is_solid(x, y, z) || z >= cur_map_max_height) {
-                        falling = 0;
-                        break;
-                    } else {
-                        pos_z = z-1-eye_height;
-                        falling = 1;
-                    }
-                }
-            }
+        if(check_for_solid_voxel_in_aabb(pos_x, pos_y, contact_point, 1, 1, 0)) {
+            falling = 0;
+        } else {
+            pos_z = contact_point-((f32)eye_height);
+            falling = 1;
         }
     }
 
@@ -489,140 +488,94 @@ void handle_input(f32 dt) {
         plane_y = old_plane_x * sin(rot_speed) + plane_y * cos(rot_speed);
     }
 
-    pitch_ang += dt*0.017*5 * lookupdown;// -= dt*400;
-    //pitch_ang = min(max(pitch_ang, -1.57), 1.57);//-.45), .45);
+    //pitch_ang += dt*0.017*5 * lookupdown;
+
+
 
 
     
     if(strafe) {
-        int go_up_height = pos_z-1;
-        f32 new_pos_x = pos_x + dir_y * strafe * dt * 15;
-        f32 new_pos_y = pos_y + (dir_x * -1) * strafe * dt * 15;
+        f32 contact_point = pos_z+eye_height;
+        //int go_up_height = (pos_z-knee_height)+eye_height;
+        f32 new_pos_x = pos_x + dir_y * strafe * ((sprint+1) * 2) * dt * 7;
+        f32 new_pos_y = pos_y + (dir_x * -1) * strafe * ((sprint+1) * 2) * dt * 7;
 
 
-        if(gravmode && check_for_solid_voxel_in_aabb(new_pos_x, pos_y, pos_z, 0, 0, 0)) {
-            if(check_for_solid_voxel_in_aabb(new_pos_x, pos_y, go_up_height, 0, 0, 0)) {
+        if(gravmode && check_for_solid_voxel_in_aabb(new_pos_x, pos_y, contact_point, 1, 1, 0)) {
+            for(int kh = 1; kh <= knee_height; kh++) {
+                int go_up_height = (pos_z-kh)+eye_height;
+                if(check_for_solid_voxel_in_aabb(new_pos_x, pos_y, go_up_height, 1, 1, 0)) {
 
-            } else {
-                // go up a step
-                pos_x = new_pos_x;
-                pos_z = go_up_height;
+                } else {
+                    // go up a step
+                    pos_x = new_pos_x;
+                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-eye_height; //ceilf(go_up_height-eye_height);
+                    //go_up_height = go_up_height-1;
+                    break;
+                }
             }
         } else {
             pos_x = new_pos_x;
         }
 
-        if(gravmode && check_for_solid_voxel_in_aabb(pos_x, new_pos_y, pos_z, 0, 0, 0)) {
-            if(check_for_solid_voxel_in_aabb(pos_x, new_pos_y, go_up_height, 0, 0, 0)) {
+        if(gravmode && check_for_solid_voxel_in_aabb(pos_x, new_pos_y, contact_point, 1, 1, 0)) {
+            for(int kh = 1; kh <= knee_height; kh++) {
+                int go_up_height = (pos_z-kh)+eye_height;
+                if(check_for_solid_voxel_in_aabb(pos_x, new_pos_y, go_up_height, 1, 1, 0)) {
 
-            } else {
-                // go up a step
-                pos_y = new_pos_y;
-                pos_z = go_up_height;
+                } else {
+                    // go up a step
+                    pos_y = new_pos_y;
+                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-eye_height;//ceilf(go_up_height-eye_height);
+                    break;
+                }
             }
         } else {
             pos_y = new_pos_y;
         }
-    
     }
 
     if(forwardbackward) {
-        f32 new_pos_x = pos_x + dir_x * forwardbackward * dt * 100;
-        f32 new_pos_y = pos_y + dir_y * forwardbackward * dt * 100;
-        f32 new_pos_z = pos_z + (forwardbackward * 2*sinf(pitch_ang)) * dt * 100;
+        f32 contact_point = pos_z+eye_height;
+        int go_up_height = (pos_z-knee_height)+eye_height;
+        f32 new_pos_x = pos_x + dir_x * forwardbackward * ((sprint+1) * 2) * dt * 20;
+        f32 new_pos_y = pos_y + dir_y * forwardbackward * ((sprint+1) * 2) * dt * 20;
         
-        //int pos_z = pos_z+eye_height;
 
         
-        if(!gravmode || !check_for_solid_voxel_in_aabb(new_pos_x, pos_y, pos_z, 0, 0, 0)) {
+        if(gravmode && check_for_solid_voxel_in_aabb(new_pos_x, pos_y, contact_point, 1, 1, 0)) {
+            for(int kh = 1; kh <= knee_height; kh++) {
+                int go_up_height = (pos_z-kh)+eye_height;
+                if(check_for_solid_voxel_in_aabb(new_pos_x, pos_y, go_up_height, 1, 1, 0)) {
+
+                } else {
+                    // go up a step
+                    pos_x = new_pos_x;
+                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-eye_height; //ceilf(go_up_height-eye_height);
+                    go_up_height = go_up_height-1;
+                    break;
+                }
+            }
+        } else {
             pos_x = new_pos_x;
         }
-        
-        if(!gravmode || !check_for_solid_voxel_in_aabb(pos_x, new_pos_y, pos_z, 0, 0, 0)) {
+
+        if(gravmode && check_for_solid_voxel_in_aabb(pos_x, new_pos_y, contact_point, 1, 1, 0)) {
+            for(int kh = 1; kh <= knee_height; kh++) {
+                int go_up_height = (pos_z-kh)+eye_height;
+                if(check_for_solid_voxel_in_aabb(pos_x, new_pos_y, go_up_height, 1, 1, 0)) {
+
+                } else {
+                    // go up a step
+                    pos_y = new_pos_y;
+                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-eye_height;//ceilf(go_up_height-eye_height);
+                    break;
+                }
+            }
+        } else {
             pos_y = new_pos_y;
         }
     
-        /*
-        //pos_x = new_pos_x;
-        //pos_y = new_pos_y;
-        height = new_pos_z;
-        //check if we collide based on height (aabb basically)
-        int collide_x = 0;
-        if (new_pos_x != pos_x) {
-            int world_height = (s32)(255.0-height) + eye_height;
-
-            int collide_ground_highest_point = 64;
-
-
-            for(int x = new_pos_x-1; x < new_pos_x+2; x++) {
-                for(int y = pos_y-1; y < pos_y+2; y++) {
-                    if(voxel_is_solid(x, y, world_height)) {
-                        collide_ground_highest_point = min(collide_ground_highest_point, world_height);
-                        if(voxel_is_solid(x, y, world_height-1)) {
-                            // check if everything up to eye height-head_margin is clear
-                            collide_x = 1;
-                            break;
-                        }
-                        for(int h = world_height-knee_height; h >= world_height-(eye_height+head_margin); h--) {
-                            if(voxel_is_solid(x, y, h)) {
-                                collide_x = 1;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            if(!collide_x) {
-                pos_x = new_pos_x;
-                if(collide_ground_highest_point != -1) {
-                    //s32 valid_z_pos = (collide_ground_highest_point-1)-eye_height;
-                    //height = 255.0-valid_z_pos;
-                }
-            } else {
-                //printf("X COLLISION!\n");
-            }
-        }
-
-        int collide_y = 0;
-        if (new_pos_y != pos_y) {
-            int world_height = (s32)(255.0-height) + eye_height;
-
-            int collide_ground_highest_point = 64;
-
-
-            for(int x = pos_x-1; x < pos_x+2; x++) {
-                for(int y = pos_y-1; y < new_pos_y+2; y++) {
-                    if(voxel_is_solid(x, y, world_height)) {
-                        collide_ground_highest_point = min(collide_ground_highest_point, world_height);
-                        if(voxel_is_solid(x, y, world_height-1)) {
-                            // check if everything up to eye height-head_margin is clear
-                            collide_y = 1;
-                            break;
-                        }
-                        for(int h = world_height-knee_height; h >= world_height-(eye_height+head_margin); h--) {
-                            if(voxel_is_solid(x, y, h)) {
-                                collide_y = 1;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            if(!collide_y) {
-                pos_y = new_pos_y;
-                if(collide_ground_highest_point != -1) {
-                    //s32 valid_z_pos = (collide_ground_highest_point-1)-eye_height;
-                    //height = 255.0-valid_z_pos;
-                }
-            } else {
-                //printf("X COLLISION!\n");
-            }
-        }
-
-        */
-
     }
 
     if(updown) {
@@ -651,10 +604,12 @@ static u8* base_occlusion_buffer = NULL;
 
 int right_mouse_down = 0;
 int cur_mouse_x, cur_mouse_y;
-
+int capt_mouse_x, capt_mouse_y;
 void handle_left_mouse_down() {
     if(!mouse_captured) {
-        printf("capturing mouse\n");
+        capt_mouse_x = cur_mouse_x;
+        capt_mouse_y = cur_mouse_y;
+        printf("capturing mouse at %i,%i\n", capt_mouse_x, capt_mouse_y);
         mouse_captured = 1;
         int err = SDL_CaptureMouse(SDL_TRUE);
         SDL_ShowCursor(0);
@@ -687,6 +642,9 @@ f32 pitch_ang_to_pitch(f32 pitchang) {
     return (sin(pitchang)*render_size)+(render_size/2);
 }
 
+#define MOUSE_SENSITIVITY 0.5f
+
+s32 last_mouse_x, last_mouse_y;
 void handle_mouse_input(f32 dt) {
     if(!mouse_captured) { 
         mouseroll = 0;
@@ -694,41 +652,87 @@ void handle_mouse_input(f32 dt) {
         leftright = 0;
         return; 
     }
-    s32 centerX = OUTPUT_WIDTH/2;
-    s32 centerY = OUTPUT_HEIGHT/2;
-    s32 dx = abs(centerX - cur_mouse_x) < 150 ? 0 : (centerX - cur_mouse_x);
-    s32 dy = abs(centerY - cur_mouse_y) < 100 ? 0 : (centerY - cur_mouse_y);
 
+    f32 halfWidth = OUTPUT_WIDTH/2;
+    f32 halfHeight = OUTPUT_HEIGHT/2;
+    //s32 dx = abs(centerX - cur_mouse_x) < 150 ? 0 : (centerX - cur_mouse_x);
+    //s32 dy = abs(centerY - cur_mouse_y) < 100 ? 0 : (centerY - cur_mouse_y);
+    f32 dx = capt_mouse_x - cur_mouse_x;
+    f32 dy = capt_mouse_y - cur_mouse_y;
+    f32 y_mult = (dy >= 0 ? 1 : -1);
+    dy *= y_mult;
+    dy *= MOUSE_SENSITIVITY;
+
+    // pitch angle should go down?
+    dy = dy > halfHeight ? halfHeight : dy;
+    f32 pct = dy / halfHeight;
+    pitch_ang = y_mult * lerp(0.0f, pct, 1.5708f);
+
+    //f32 x_mult = (dx >= 0 ? 1 : -1);
+    //printf("dx %f\n", dx);
+    dx -= halfWidth;
+    //dx *= x_mult;
+    dx *= MOUSE_SENSITIVITY;
+
+    
+    // 
+    pct = dx / halfWidth; 
+
+    //pct * 6.28;
+    pct = fmod(pct, 1.0f);
+
+    f32 ang = (pct *  6.28f)-3.1415f;//3.14159f;
+    //f32 ang = lerp(-3.14f, pct, 3.14f);
+    f32 old_dir_x = dir_x;
+    dir_x = cos(ang); //dir_x * cos(ang) - dir_y * sin(ang);
+    dir_y = sin(ang); //old_dir_x * sin(ang) + dir_y * cos(ang);
+    f32 old_plane_x = plane_x;
+    //plane_x = plane_x * cos(ang) - plane_y * sin(ang);
+    plane_x = dir_y; //1.2f;//sin((desired_fov_degrees+ang)/2);
+    plane_y = -dir_x*1.75f;//1.2f;//cos((desired_fov_degrees+ang)/2);
+    //tan((desired_fov_degrees+ang)/2)
+    //plane_y = old_plane_x * sin(ang) + plane_y * cos(ang);
+    
+
+
+    /* 
     f32 lerp_term = (-dx/(OUTPUT_WIDTH/2.0));
 
     mouseroll = lerp(0, lerp_term*lerp_term, .25);
-    if(dx > 0) { mouseroll = -mouseroll; }
+    if(cur_mouse_x != last_mouse_x) {
+        if(dx > 0) { mouseroll = -mouseroll; }
 
-    if(dx) {
-        f32 leftrightportion = dx*cos(baseroll);
-        f32 updownportion = dx*sinf(baseroll);
-        leftright = (f32)leftrightportion / OUTPUT_WIDTH * 2;
-        lookupdown = updownportion*.010;
-    } else {
-        leftright = 0;
-        lookupdown = 0;
+        if(dx) {
+            f32 leftrightportion = dx*cos(baseroll);
+            f32 updownportion = dx*sinf(baseroll);
+            leftright = (f32)leftrightportion / OUTPUT_WIDTH * 2;
+            lookupdown = updownportion*.010;
+        } else {
+            leftright = 0;
+            lookupdown = 0;
+        }
     }
 
-    if(dy) {
-        
-        lookupdown += dy*cosf(baseroll)*.012;
-        leftright += -dy*sinf(baseroll)*.004;
+    if(cur_mouse_y != last_mouse_y) {
+        if(dy) {
+            
+            lookupdown += dy*cosf(baseroll)*.012;
+            leftright += -dy*sinf(baseroll)*.004;
 
-    } else {
-        if(!dx) { lookupdown = 0; }
+        } else {
+            if(!dx) { lookupdown = 0; }
+        }
     }
+    last_mouse_x = cur_mouse_x;
+    last_mouse_y = cur_mouse_y;
+    */
+
 
 }
 
 void update_mouse_pos(int mouse_x, int mouse_y) {
     cur_mouse_x = mouse_x;
     cur_mouse_y = mouse_y;
-
 }
 
 
@@ -1042,7 +1046,7 @@ void setup_internal_render_buffers() {
     f32 scale = 1.0 / tanf(deg_to_rad(desired_fov_degrees)/2.0);
 
     //scale_height = ((((16/9)*(.5))/(4/3))*render_size);
-    scale_height = (render_height) * scale * max(1, aspect_ratio);
+    scale_height = ((render_height) * scale * max(1, aspect_ratio));
 
     base_inter_buffer = realloc(base_inter_buffer, (sizeof(u32)*render_size*render_size)+32);
     base_world_pos_buffer = realloc(base_world_pos_buffer, (sizeof(u32)*render_size*render_size)+32);
@@ -1693,7 +1697,9 @@ Olivec_Canvas vc_render(double dt) {
             u8 new_r = 0xC1>>2; // 0x30
             u8 new_g = 0xE3>>2; // 0x38
             u8 new_b = 0xC7>>2; // 0x31
-            *(color_ptr+color_slot_in_column) = (0b01<<24)|(0b11111100<<24)|(new_b<<16)|(new_g<<8)|(new_r);
+            u8 prev_ao = (*(color_ptr+color_slot_in_column))>>24;
+
+            *(color_ptr+color_slot_in_column) = (prev_ao<<24)|(0b11111100<<24)|(new_b<<16)|(new_g<<8)|(new_r);
             //runs[modify_run_idx].is_transparent = 1;
             
             //set_voxel_to_surface(screen_center_map_x, screen_center_map_y-1, screen_center_map_z, DEFAULT_VOXEL_COLOR);
@@ -1791,6 +1797,8 @@ Olivec_Canvas vc_render(double dt) {
         DEBUG_PRINT_TEXT("%f,%f", pos_x, pos_y);
 
     }
+    
+    vc_sdl_release_pixel_buffer();
     return oc;
 }
 

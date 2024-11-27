@@ -114,7 +114,7 @@ int main(int argc, char** argv)
         window = SDL_CreateWindow("Voxworld", 40, 40, OUTPUT_WIDTH, OUTPUT_HEIGHT, SDL_WINDOW_MOUSE_CAPTURE);
         if (window == NULL) return_defer(1);
 
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);// SDL_RENDERER_ACCELERATED);
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
         if (renderer == NULL) return_defer(1);
 
         //SDL_GL_SetSwapInterval(0);
