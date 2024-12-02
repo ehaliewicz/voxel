@@ -13,7 +13,7 @@
 #define NIGHT_AMB_LIGHT_FACTOR .05
 
 
-#define DAY_MAX_Z 512
+#define DAY_MAX_Z 800
 #define NIGHT_MAX_Z 512
 #define NO_FOG_MAX_Z 2048
     
@@ -22,15 +22,11 @@
 #define PROFILER 0
 #ifdef DEBUG
 // normally 12 :)
-#define MAX_NUM_THREADS 12
-#define NUM_LIGHT_MAP_THREADS 12
-#define NUM_RAYCAST_THREADS 12
-#define NUM_ROTATE_LIGHT_AND_BLEND_THREADS 1
+#define NUM_RENDER_THREADS 1
+#define NUM_LIGHT_MAP_THREADS 1
 #else
-#define MAX_NUM_THREADS 12
-#define NUM_LIGHT_MAP_THREADS 12
-#define NUM_RAYCAST_THREADS 12
-#define NUM_ROTATE_LIGHT_AND_BLEND_THREADS 12
+#define NUM_RENDER_THREADS 10
+#define NUM_LIGHT_MAP_THREADS 6
 #endif
 
 #include "selectable_profiler.c"
@@ -109,11 +105,11 @@ static __m256i get_swizzled_map_idx_256(__m256i x, __m256i y) {
 
 }
 
-f32 pos_x = 0.0f;
-f32 pos_y = 0.0f;
+f32 pos_x = 10.0f;
+f32 pos_y = 10.0f;
 f32 dir_x = 1.0f;
 f32 dir_y = 0.0f;
-f32 pos_z = 0.0f; //15.0f;
+f32 pos_z = -10.0f; //15.0f;
 //static f32 height = 240.0;
 
 float deg_to_rad(float degrees) {
@@ -179,15 +175,15 @@ char* view_mode_strs[] = {
 
 typedef enum {
     NO_LIGHTING = 0,
-    STATIC_LIGHTING = 1,
-    DYNAMIC_LIGHTING = 2
+    //FACE_LIGHTING = 1,
+    NORMALS_LIGHTING = 1
     //FANCY_LIGHTING = 2,
 } lighting_modes;
 
 char* lighting_mode_strs[] = {
     "disabled",
-    "static",
-    "dynamic"
+    //"face",
+    "normal"
 };
 
 // currently these are the same
@@ -210,7 +206,7 @@ f32 total_time;
 static int frame = 0;
 static int vector = 0;//1;
 static int fogmode = FOG;
-static int lighting = STATIC_LIGHTING;
+static int lighting = NO_LIGHTING;
 static int transparency = 0;
 static int ambient_occlusion = 1;
 static int render_6dof = 0;
@@ -249,6 +245,7 @@ typedef struct {
     s32 min_x, min_y;
     s32 max_x, max_y;
     volatile uint64_t finished;
+    volatile uint64_t working;
 } thread_params;
 
 typedef void (*raw_render_func)(s32 min_x, s32 min_y, s32 max_x, s32 max_y);
@@ -276,7 +273,16 @@ void start_pool(thread_pool* tp, job_pool* rp) {
     }
 }
 
-void wait_for_render_pool_to_finish(job_pool* p) {
+void start_pool_new_jobs_always_threaded(thread_pool* tp, job_pool* rp) {
+    for(int i = 0; i < rp->num_jobs; i++) {
+
+        if(rp->parms[i].working) { continue; }
+        rp->parms[i].working = 1;
+        thread_pool_add_work(tp, rp->func, (void*)&rp->parms[i]);
+    }
+}
+
+void wait_for_job_pool_to_finish(job_pool* p) {
     if(p->num_jobs > 1) {
         while(1) {
             top_of_wait_loop:;
@@ -288,16 +294,41 @@ void wait_for_render_pool_to_finish(job_pool* p) {
     }
 }
 
-thread_pool* pool;
+thread_pool *render_pool, *map_pool;
 
+
+int falling = 1;
+
+int eye_height = 11;
+int knee_height = 4;
+
+f32 accel = .68;
+f32 vel = 0.0f;
+f32 max_accel = 80.0f;
+
+f32 move_forward_speed = .7f;
+f32 strafe_speed = 1.8f;
+f32 fly_speed = 2.2f;
+
+f32 cam_pos_z = 0.0f;
 #include "voxelmap.c"
+
+void init_player_positions() {
+    vel = 0.0f;
+    pos_x = 10.0f;
+    pos_y = 10.0f;
+    pos_z = columns_header_data[get_voxelmap_idx(pos_x,pos_y)].top_y - 20.0f;
+    cam_pos_z = pos_z;
+}
 
 void next_map() {
     load_map(cur_map++);
+    init_player_positions();
 }
 
 void reload_map() {
     load_map(--cur_map); 
+    init_player_positions();
 }
 
 
@@ -415,6 +446,7 @@ void handle_keyup(SDL_KeyboardEvent key) {
                 //SDL_SetRelativeMouseMode(SDL_FALSE);
                 //int err = SDL_CaptureMouse(SDL_TRUE);
                 SDL_SetRelativeMouseMode(SDL_FALSE);
+                SDL_CaptureMouse(SDL_FALSE);
                 //SDL_ShowCursor(0);
                 SDL_ShowCursor(1);
             }
@@ -436,22 +468,22 @@ void handle_keydown(SDL_KeyboardEvent key) {
             break;
 
         case SDL_SCANCODE_W:
-            forwardbackward = .4;
+            forwardbackward = move_forward_speed;
             break;
         case SDL_SCANCODE_S:
-            forwardbackward = -.4;
+            forwardbackward = -move_forward_speed;
             break;
         case SDL_SCANCODE_A: 
-            strafe = -1.1;
+            strafe = -strafe_speed;
             break;
         case SDL_SCANCODE_D: 
-            strafe = +1.1;
+            strafe = +strafe_speed;
             break;
         case SDL_SCANCODE_Z:
-            updown = -1.0;
+            updown = -fly_speed;
             break;
         case SDL_SCANCODE_X:
-            updown = +1.0;
+            updown = +fly_speed;
             break;
         case SDL_SCANCODE_LSHIFT:
             sprint = 1;
@@ -460,24 +492,102 @@ void handle_keydown(SDL_KeyboardEvent key) {
 }
 
 
-int falling = 1;
+// forward, backward, left, and right movement
+void move_4dof(f32 old_pos_x, f32 old_pos_y, f32 old_pos_z, f32 new_pos_x, f32 new_pos_y) {
+    if(!gravmode) {
+        pos_x = new_pos_x;
+        pos_y = new_pos_y;
+        return;
+    }
+    f32 contact_point = old_pos_z+eye_height;
+    //int go_up_height = (pos_z-KNEE_HEIGHT)+EYE_HEIGHT;
+
+    s32 floor_new_pos_x1 = floor(new_pos_x);
+    s32 floor_new_pos_x2 = floor_new_pos_x1+1;
+    s32 floor_new_pos_y1 = floor(new_pos_y);
+    s32 floor_new_pos_y2 = floor_new_pos_y1+1;
+    
+    int too_tall_to_go_up_height = (pos_z-knee_height-1)+eye_height;
+    s32 blocked_x1y1 = check_for_solid_voxel_in_aabb(floor_new_pos_x1, floor_new_pos_y1, too_tall_to_go_up_height, 1, 1, 0);
+    s32 blocked_x2y1 = check_for_solid_voxel_in_aabb(floor_new_pos_x2, floor_new_pos_y1, too_tall_to_go_up_height, 1, 1, 0);
+    s32 blocked_x1y2 = check_for_solid_voxel_in_aabb(floor_new_pos_x1, floor_new_pos_y2, too_tall_to_go_up_height, 1, 1, 0);
+    s32 blocked_x2y2 = check_for_solid_voxel_in_aabb(floor_new_pos_x2, floor_new_pos_y2, too_tall_to_go_up_height, 1, 1, 0);
+    if(blocked_x1y1 || blocked_x2y1 || blocked_x1y2 || blocked_x2y2) {
+        // can't move, just return
+        return;
+    }
+
+    int got_x1y1 = 0;
+    int got_x1y2 = 0;
+    int got_x2y1 = 0;
+    int got_x2y2 = 0;
+    float x1y1_pos_z = pos_z;
+    float x2y1_pos_z = pos_z;
+    float x1y2_pos_z = pos_z; // either above the player by less than knee height, or some point below the player
+    float x2y2_pos_z = pos_z;
+    // find if there's a height up to knee height where each of these is solid
+    // if not then just put it at current height i guess
+
+    for(int kh = 0; kh <= knee_height; kh++) {
+        int go_up_height = (pos_z-kh)+eye_height;
+        if(!got_x1y1 && !check_for_solid_voxel_in_aabb(floor_new_pos_x1, floor_new_pos_y1, go_up_height, 1, 1, 0)) {
+            x1y1_pos_z = go_up_height - eye_height;
+            got_x1y1 = 1;
+        }
+        if(!got_x2y1 && !check_for_solid_voxel_in_aabb(floor_new_pos_x2, floor_new_pos_y1, go_up_height, 1, 1, 0)) {
+            x2y1_pos_z = go_up_height - eye_height;
+            got_x2y1 = 1;
+        }
+        if(!got_x1y2 && !check_for_solid_voxel_in_aabb(floor_new_pos_x1, floor_new_pos_y2, go_up_height, 1, 1, 0)) {
+            x1y2_pos_z = go_up_height - eye_height;
+            got_x1y2 = 1;
+        }
+        if(!got_x2y2 && !check_for_solid_voxel_in_aabb(floor_new_pos_x2, floor_new_pos_y2, go_up_height, 1, 1, 0)) {
+            x2y2_pos_z = go_up_height - eye_height;
+            got_x2y2 = 1;
+        }
+    }
+
+    f32 subX = new_pos_x - floor_new_pos_x1;
+    f32 subY = new_pos_y - floor_new_pos_y1;
+    pos_x = new_pos_x;
+    pos_y = new_pos_y;
+    // find lowest and highest points out of the four.
+    pos_z = lerp(lerp(x1y1_pos_z, subX, x2y1_pos_z),
+                    subY,
+                    lerp(x1y2_pos_z, subX, x2y2_pos_z));
+
+        
+}
 
 void handle_input(f32 dt) {
     if(!map_loaded) { return ;}
     int head_margin = 1;
-    int knee_height = 2;
-    int eye_height = 4;
 
     if(gravmode) {
+        if((pos_z+eye_height) >= cur_map_max_height) {
+            pos_z = cur_map_max_height-eye_height;
+        }
         int collide_z = 0;
-        f32 new_world_pos_z = pos_z+15*dt;
+        f32 new_world_pos_z = pos_z+vel*dt;//15*dt;
         f32 contact_point = new_world_pos_z+eye_height;
+        s32 floor_x = floor(pos_x);
+        s32 floor_y = floor(pos_y);
+        s32 next_x = floor_x+1;
+        s32 next_y = floor_y+1;
+        s32 solid_a = check_for_solid_voxel_in_aabb(pos_x, next_y, contact_point, 1, 1, 0);
+        s32 solid_b = check_for_solid_voxel_in_aabb(next_x, next_y, contact_point, 1, 1, 0);
+        s32 solid_c = check_for_solid_voxel_in_aabb(pos_x, next_y, contact_point, 1, 1, 0);
+        s32 solid_d = check_for_solid_voxel_in_aabb(next_x, next_y, contact_point, 1, 1, 0);
 
-        if(check_for_solid_voxel_in_aabb(pos_x, pos_y, contact_point, 1, 1, 0)) {
+        if(solid_a || solid_b || solid_c || solid_d) { 
+        //if(check_for_solid_voxel_in_aabb(pos_x, pos_y, contact_point, 1, 1, 0)) {
             falling = 0;
+            vel = 0.0f;
         } else {
             pos_z = contact_point-((f32)eye_height);
             falling = 1;
+            vel = (vel+accel) > max_accel ? max_accel : vel+accel;
         }
     }
 
@@ -500,10 +610,12 @@ void handle_input(f32 dt) {
     
     if(strafe) {
         f32 contact_point = pos_z+eye_height;
-        //int go_up_height = (pos_z-knee_height)+eye_height;
-        f32 new_pos_x = pos_x + dir_y * strafe * ((sprint+1) * 2) * dt * 7;
-        f32 new_pos_y = pos_y + (dir_x * -1) * strafe * ((sprint+1) * 2) * dt * 7;
-
+        //int go_up_height = (pos_z-KNEE_HEIGHT)+EYE_HEIGHT;
+        f32 new_pos_x = pos_x + dir_y * strafe * ((sprint+1) * 2) * dt * 5;
+        f32 new_pos_y = pos_y + (dir_x * -1) * strafe * ((sprint+1) * 2) * dt * 5;
+        
+        //move_4dof(pos_x, pos_y, pos_z, new_pos_x, pos_y);
+        //move_4dof(pos_x, pos_y, pos_z, new_pos_x, new_pos_y);
 
         if(gravmode && check_for_solid_voxel_in_aabb(new_pos_x, pos_y, contact_point, 1, 1, 0)) {
             for(int kh = 1; kh <= knee_height; kh++) {
@@ -513,7 +625,7 @@ void handle_input(f32 dt) {
                 } else {
                     // go up a step
                     pos_x = new_pos_x;
-                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-eye_height; //ceilf(go_up_height-eye_height);
+                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-EYE_HEIGHT; //ceilf(go_up_height-EYE_HEIGHT);
                     //go_up_height = go_up_height-1;
                     break;
                 }
@@ -521,7 +633,6 @@ void handle_input(f32 dt) {
         } else {
             pos_x = new_pos_x;
         }
-
         if(gravmode && check_for_solid_voxel_in_aabb(pos_x, new_pos_y, contact_point, 1, 1, 0)) {
             for(int kh = 1; kh <= knee_height; kh++) {
                 int go_up_height = (pos_z-kh)+eye_height;
@@ -530,7 +641,7 @@ void handle_input(f32 dt) {
                 } else {
                     // go up a step
                     pos_y = new_pos_y;
-                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-eye_height;//ceilf(go_up_height-eye_height);
+                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-EYE_HEIGHT;//ceilf(go_up_height-EYE_HEIGHT);
                     break;
                 }
             }
@@ -542,9 +653,11 @@ void handle_input(f32 dt) {
     if(forwardbackward) {
         f32 contact_point = pos_z+eye_height;
         int go_up_height = (pos_z-knee_height)+eye_height;
-        f32 new_pos_x = pos_x + dir_x * forwardbackward * ((sprint+1) * 2) * dt * 20;
-        f32 new_pos_y = pos_y + dir_y * forwardbackward * ((sprint+1) * 2) * dt * 20;
+        f32 new_pos_x = pos_x + dir_x * forwardbackward * ((sprint+1) * 2) * dt * 15;
+        f32 new_pos_y = pos_y + dir_y * forwardbackward * ((sprint+1) * 2) * dt * 15;
         
+        //move_4dof(pos_x, pos_y, pos_z, new_pos_x, pos_y);
+        //move_4dof(pos_x, pos_y, pos_z, new_pos_x, new_pos_y);
 
         
         if(gravmode && check_for_solid_voxel_in_aabb(new_pos_x, pos_y, contact_point, 1, 1, 0)) {
@@ -555,7 +668,7 @@ void handle_input(f32 dt) {
                 } else {
                     // go up a step
                     pos_x = new_pos_x;
-                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-eye_height; //ceilf(go_up_height-eye_height);
+                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-EYE_HEIGHT; //ceilf(go_up_height-EYE_HEIGHT);
                     go_up_height = go_up_height-1;
                     break;
                 }
@@ -563,7 +676,9 @@ void handle_input(f32 dt) {
         } else {
             pos_x = new_pos_x;
         }
+        
 
+        
         if(gravmode && check_for_solid_voxel_in_aabb(pos_x, new_pos_y, contact_point, 1, 1, 0)) {
             for(int kh = 1; kh <= knee_height; kh++) {
                 int go_up_height = (pos_z-kh)+eye_height;
@@ -572,14 +687,14 @@ void handle_input(f32 dt) {
                 } else {
                     // go up a step
                     pos_y = new_pos_y;
-                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-eye_height;//ceilf(go_up_height-eye_height);
+                    pos_z = go_up_height-eye_height+0.999f;//go_up_height-EYE_HEIGHT;//ceilf(go_up_height-EYE_HEIGHT);
                     break;
                 }
             }
         } else {
             pos_y = new_pos_y;
         }
-    
+        
     }
 
     if(updown) {
@@ -615,6 +730,8 @@ void handle_left_mouse_down() {
         capt_mouse_y = cur_mouse_y;
         printf("capturing mouse at %i,%i\n", capt_mouse_x, capt_mouse_y);
         mouse_captured = 1;
+        rollleftright = 0.0f;
+        baseroll = 0.0f;
         //int err = SDL_CaptureMouse(SDL_TRUE);
         SDL_SetRelativeMouseMode(SDL_TRUE);
         SDL_ShowCursor(0);
@@ -647,7 +764,7 @@ f32 pitch_ang_to_pitch(f32 pitchang) {
     return (sin(pitchang)*render_size)+(render_size/2);
 }
 
-#define MOUSE_SENSITIVITY 0.5f
+#define MOUSE_SENSITIVITY 0.1f
 
 s32 last_mouse_x, last_mouse_y;
 void handle_mouse_input(f32 dt) {
@@ -694,7 +811,7 @@ void handle_mouse_input(f32 dt) {
     f32 old_plane_x = plane_x;
     //plane_x = plane_x * cos(ang) - plane_y * sin(ang);
     plane_x = dir_y; //1.2f;//sin((desired_fov_degrees+ang)/2);
-    plane_y = -dir_x*1.75f;//1.2f;//cos((desired_fov_degrees+ang)/2);
+    plane_y = -dir_x;//1.2f;//cos((desired_fov_degrees+ang)/2);
     //tan((desired_fov_degrees+ang)/2)
     //plane_y = old_plane_x * sin(ang) + plane_y * cos(ang);
     
@@ -741,7 +858,22 @@ void update_mouse_pos(int mouse_x, int mouse_y) {
 }
 
 
+thread_params light_chunk_parms[6] = {
+    {.finished = 1, .working = 0}, {.finished = 1, .working = 0},
+    {.finished = 1, .working = 0}, {.finished = 1, .working = 0},
+    {.finished = 1, .working = 0}, {.finished = 1, .working = 0}
+    };
+
+job_pool light_pool_jobs = {
+    .num_jobs = 6
+};
+
+void cleanup_threads() {
+    wait_for_job_pool_to_finish(&light_pool_jobs);
+}
+
 #include "vc.c"
+
 
 double fmod(double x, double y);
 
@@ -1040,7 +1172,7 @@ void setup_internal_render_buffers() {
     }
 
 
-    //pixels = realloc(pixels, sizeof(u32)*OUTPUT_WIDTH*OUTPUT_HEIGHT+32);
+    //pixels = realloc_wrapper(pixels, sizeof(u32)*OUTPUT_WIDTH*OUTPUT_HEIGHT+32);
     //while(((intptr_t)pixels)&0b11111) {
     //    pixels++;
     //}
@@ -1051,28 +1183,28 @@ void setup_internal_render_buffers() {
     f32 scale = 1.0 / tanf(deg_to_rad(desired_fov_degrees)/2.0);
 
     //scale_height = ((((16/9)*(.5))/(4/3))*render_size);
-    scale_height = ((render_height) * scale * max(1, aspect_ratio));
+    scale_height = ((render_height) * scale * 1.3 * max(1, aspect_ratio));
 
-    base_inter_buffer = realloc(base_inter_buffer, (sizeof(u32)*render_size*render_size)+32);
-    base_world_pos_buffer = realloc(base_world_pos_buffer, (sizeof(u32)*render_size*render_size)+32);
-    base_norm_buffer = realloc(base_norm_buffer, (sizeof(f32)*2*render_size*render_size)+32);
-    base_occlusion_buffer = realloc(base_occlusion_buffer, (sizeof(u8)*render_size*render_size/8)+32);
-    base_albedo_buffer = realloc(base_albedo_buffer, (sizeof(u32)*render_size*render_size)+32);
-    base_premult_norm_buffer = realloc(base_premult_norm_buffer, (sizeof(char)*render_size*render_size)+32);
+    //base_inter_buffer = realloc_wrapper(base_inter_buffer, (sizeof(u32)*render_size*render_size)+32);
+    base_world_pos_buffer = realloc_wrapper(base_world_pos_buffer, (sizeof(u32)*render_size*render_size)+32, "world_pos buffer");
+    base_norm_buffer = realloc_wrapper(base_norm_buffer, (sizeof(f32)*2*render_size*render_size)+32, "normal buffer");
+    base_occlusion_buffer = realloc_wrapper(base_occlusion_buffer, (sizeof(u8)*render_size*render_size/8)+32, "occlusion buffer");
+    base_albedo_buffer = realloc_wrapper(base_albedo_buffer, (sizeof(u32)*render_size*render_size)+32, "albedo buffer");
+    //base_premult_norm_buffer = realloc_wrapper(base_premult_norm_buffer, (sizeof(char)*render_size*render_size)+32);
 
 
     
-    inter_buffer = base_inter_buffer;
+    //inter_buffer = base_inter_buffer;
     world_pos_buffer = base_world_pos_buffer;
     norm_buffer = base_norm_buffer;
-    premult_norm_buffer = base_premult_norm_buffer;
+    //premult_norm_buffer = base_premult_norm_buffer;
     occlusion_buffer = base_occlusion_buffer;
     albedo_buffer = base_albedo_buffer;
 
     // alignment shenanigans for avx2
-    while(((intptr_t)inter_buffer)&0b11111) {
-        inter_buffer++;
-    }
+    //while(((intptr_t)inter_buffer)&0b11111) {
+    //    inter_buffer++;
+    //}
     while(((intptr_t)occlusion_buffer)&0b11111) {
         occlusion_buffer++;
     }
@@ -1085,9 +1217,9 @@ void setup_internal_render_buffers() {
     while(((intptr_t)albedo_buffer)&0b11111) {
         albedo_buffer++;
     }
-    while(((intptr_t)premult_norm_buffer)&0b11111) {
-        premult_norm_buffer++;
-    }
+    //while(((intptr_t)premult_norm_buffer)&0b11111) {
+    //    premult_norm_buffer++;
+    //}
 
     setup_render_size = 1;
 
@@ -1103,9 +1235,20 @@ __m256 srgb255_to_linear_256(__m256 cols) {
     return _mm256_mul_ps(div_255, div_255);
 }
 
+f32 srgb255_to_linear(f32 col) {
+
+    f32 one_over_255 = (1.0f / 255.0f);
+    f32 div_255 = (col*one_over_255);
+    return (div_255*div_255);
+}
+
 __m256i linear_to_srgb_255_256(__m256 cols) {
 
     return _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_set1_ps(255.0f), _mm256_sqrt_ps(cols)));
+}
+
+f32 linear_to_srgb_255(f32 col) {
+    return 255.0 * sqrtf(col);
 }
 
 void handle_mouse_input(f32 dt);
@@ -1275,16 +1418,25 @@ typedef enum {
 
 Olivec_Canvas vc_render(double dt) {
     handle_mouse_input(dt);
-    handle_input(dt);   
-
+    //prev_pos_z = pos_z;
+    handle_input(dt);
+    if(fabs(cam_pos_z - pos_z) < 0.1f) {
+        cam_pos_z = pos_z;
+    } else {
+        cam_pos_z += (pos_z-cam_pos_z)*(min(dt,.1f)/0.1f);
+    }
 
 
     static int setup_thread_pool = 0;
     if(!setup_thread_pool) {
-        pool = thread_pool_create(MAX_NUM_THREADS);
+        render_pool = thread_pool_create(NUM_RENDER_THREADS);
+        map_pool = thread_pool_create(NUM_LIGHT_MAP_THREADS);
 
         setup_thread_pool = 1;
     }
+
+
+
 
 
     pixels = vc_sdl_request_pixel_buffer(render_width, render_height);
@@ -1297,6 +1449,41 @@ Olivec_Canvas vc_render(double dt) {
     if(!map_loaded) {
         load_map(cur_map++);
         map_loaded = 1;
+        init_player_positions();
+    }
+
+    // working 0 -> not started
+    // working 1, finished 0 -> started, not finished
+    // working 1, finished 1 -> started, finished
+
+    int gathered_jobs = 0;
+    for(int i = 0; i < NUM_LIGHT_MAP_THREADS; i++) {
+        if(light_chunk_parms[i].finished == 0) {
+            continue;
+        }
+        //printf("thread %i is free!\n", i);
+        // we have a free slot
+        // check if any chunks need to be lit
+        int per_axis = light_map_size / LIGHT_CHUNK_SIZE;
+        int chunk_to_light = find_closest_unlit_chunk(pos_x, pos_y);
+        if(chunk_to_light == -1) { break; }
+        //printf("lighting chunk %i,%i\n", LIGHT_CHUNK_SIZE*(chunk_to_light%per_axis),
+        //                                LIGHT_CHUNK_SIZE*(chunk_to_light/per_axis));
+        light_chunk_parms[i].finished = 0;
+        light_chunk_parms[i].min_x = light_map_chunks[chunk_to_light].min_x;
+        light_chunk_parms[i].min_y = light_map_chunks[chunk_to_light].min_y;
+        light_chunk_parms[i].max_x = light_map_chunks[chunk_to_light].min_x+LIGHT_CHUNK_SIZE;
+        light_chunk_parms[i].max_y = light_map_chunks[chunk_to_light].min_y+LIGHT_CHUNK_SIZE;
+        gathered_jobs++;
+        light_map_chunks[chunk_to_light].lit = 1;
+    }
+    if(gathered_jobs) {
+        //printf("lighting %i chunks\n", gathered_jobs);
+        light_pool_jobs.func = light_map_wrapper;
+        light_pool_jobs.raw_func = light_map;
+        light_pool_jobs.parms = light_chunk_parms;
+                    
+        start_pool_new_jobs_always_threaded(map_pool, &light_pool_jobs);
     }
 
     if(!plane_parameters_setup) {
@@ -1337,6 +1524,9 @@ Olivec_Canvas vc_render(double dt) {
     int half_x = ((max_x-min_x)/2);
     int quarter_x = half_x/2;
 
+    //memset(columns_bitmaps_data, 0, sizeof(column_bitmaps)*1024*1024);
+    
+
     double start_clear = GetTicks();
     // FILL BEFORE RENDER
     {
@@ -1366,25 +1556,25 @@ Olivec_Canvas vc_render(double dt) {
 
     double start_raycast = GetTicks();
     {
-        thread_params parms[NUM_RAYCAST_THREADS];
+        thread_params parms[NUM_RENDER_THREADS];
 
-        for(int i = 0; i < NUM_RAYCAST_THREADS; i++) {
+        for(int i = 0; i < NUM_RENDER_THREADS; i++) {
             parms[i].finished = 0;
             parms[i].min_x = (i == 0) ? min_x : parms[i-1].max_x;
-            parms[i].max_x = (i == NUM_RAYCAST_THREADS-1) ? max_x : (parms[i].min_x + draw_dx/NUM_RAYCAST_THREADS);
+            parms[i].max_x = (i == NUM_RENDER_THREADS-1) ? max_x : (parms[i].min_x + draw_dx/NUM_RENDER_THREADS);
             parms[i].min_y = min_y;
             parms[i].max_y = max_y;
         }
         job_pool rp = {
-            .num_jobs = NUM_RAYCAST_THREADS,
+            .num_jobs = NUM_RENDER_THREADS,
             .parms = parms
         };
             rp.func = render_6dof ? raycast_scalar_wrapper : raycast_scalar_wrapper,
             rp.raw_func = render_6dof ? raycast_scalar : raycast_scalar,
         
         //raycast_scalar(min_x, min_y, max_x, max_y);
-        start_pool(pool, &rp);
-        wait_for_render_pool_to_finish(&rp);
+        start_pool(render_pool, &rp);
+        wait_for_job_pool_to_finish(&rp);
     }
     double end_raycast = GetTicks();
 
@@ -1593,8 +1783,27 @@ Olivec_Canvas vc_render(double dt) {
     double start_light = GetTicks();
 
     {
-        thread_params parms[12];
-        if(double_pixels == 2) {
+        thread_params parms[NUM_RENDER_THREADS];
+        
+        if(double_pixels == 4) {
+            // the left edge of the screen breaks in this pass with 8 jobs, prob not divisible by 8
+            // honestly, it runs so much faster that I sort of don't care about using 8 threads here
+            for(int i = 0; i < 2; i++) {
+                parms[i].finished = 0;
+                parms[i].min_x = (render_width*i/2);
+                parms[i].max_x = parms[i].min_x + (render_width/2);
+                parms[i].min_y = 0;
+                parms[i].max_y = render_height;
+            }
+            job_pool rp = {
+                .num_jobs = 2,
+                .func = rotate_light_and_blend_wrapper,
+                .raw_func = rotate_light_and_blend,
+                .parms = parms
+            };
+            start_pool(render_pool, &rp);
+            wait_for_job_pool_to_finish(&rp);
+        } else if(double_pixels == 2) {
             // the left edge of the screen breaks in this pass with 8 jobs, prob not divisible by 8
             // honestly, it runs so much faster that I sort of don't care about using 8 threads here
             for(int i = 0; i < 4; i++) {
@@ -1610,24 +1819,24 @@ Olivec_Canvas vc_render(double dt) {
                 .raw_func = rotate_light_and_blend,
                 .parms = parms
             };
-            start_pool(pool, &rp);
-            wait_for_render_pool_to_finish(&rp);
+            start_pool(render_pool, &rp);
+            wait_for_job_pool_to_finish(&rp);
         } else {
-            for(int i = 0; i < NUM_ROTATE_LIGHT_AND_BLEND_THREADS; i++) {
+            for(int i = 0; i < NUM_RENDER_THREADS; i++) {
                 parms[i].finished = 0;
-                parms[i].min_x = (render_width*i/NUM_ROTATE_LIGHT_AND_BLEND_THREADS);
-                parms[i].max_x = parms[i].min_x + (render_width/NUM_ROTATE_LIGHT_AND_BLEND_THREADS);
+                parms[i].min_x = (render_width*i/NUM_RENDER_THREADS);
+                parms[i].max_x = parms[i].min_x + (render_width/NUM_RENDER_THREADS);
                 parms[i].min_y = 0;
                 parms[i].max_y = render_height;
             }
             job_pool rp = {
-                .num_jobs = NUM_ROTATE_LIGHT_AND_BLEND_THREADS,
+                .num_jobs = NUM_RENDER_THREADS,
                 .func = rotate_light_and_blend_wrapper,
                 .raw_func = rotate_light_and_blend,
                 .parms = parms
             };
-            start_pool(pool, &rp);
-            wait_for_render_pool_to_finish(&rp);
+            start_pool(render_pool, &rp);
+            wait_for_job_pool_to_finish(&rp);
         }   
     }
     vc_sdl_release_pixel_buffer();
@@ -1643,9 +1852,13 @@ Olivec_Canvas vc_render(double dt) {
     int clamp_x = CLAMP(center_plus_mouse_off_x, 0, render_size-1);
     int clamp_y = CLAMP(center_plus_mouse_off_y, 0, render_size-1);
 
-    u32 center_fb_idx = fb_swizzle(clamp_x, clamp_y);
-    u32 combined_world_idx = world_pos_buffer[center_fb_idx];
-
+    u32 picked_fb_idx;
+    if(mouse_captured) {
+        picked_fb_idx = fb_swizzle(render_size/2, render_size/2);
+    } else {
+        picked_fb_idx = fb_swizzle(clamp_x, clamp_y);
+    }
+    u32 combined_world_idx = world_pos_buffer[picked_fb_idx];
 
 
     u32 screen_center_map_y = (combined_world_idx>>8)&0b11111111111;
@@ -1696,29 +1909,39 @@ Olivec_Canvas vc_render(double dt) {
 
     static int last_frame_middle_mouse_down = 0;
     if(middle_mouse_down) {
-        if(last_frame_middle_mouse_down == 0) {
+        if(1) { //last_frame_middle_mouse_down == 0) {
             last_frame_middle_mouse_down = 1;
-            
-            u8 new_r = 0xC1>>2; // 0x30
-            u8 new_g = 0xE3>>2; // 0x38
-            u8 new_b = 0xC7>>2; // 0x31
-            u8 prev_ao = (*(color_ptr+color_slot_in_column))>>24;
+            for(int i = 0; i < 32; i++) { //128; i++) {
+                float rx = (rand()-(RAND_MAX/2)) / ((double)RAND_MAX);
+                float ry = (rand()-(RAND_MAX/2)) / ((double)RAND_MAX);
+                float rz = (rand()-(RAND_MAX/2)) / ((double)RAND_MAX);
+                float scale = 10.0f * (rand()/((double)RAND_MAX)); // 100.0f;
 
-            *(color_ptr+color_slot_in_column) = (prev_ao<<24)|(0b11111100<<24)|(new_b<<16)|(new_g<<8)|(new_r);
-            //runs[modify_run_idx].is_transparent = 1;
-            
-            //set_voxel_to_surface(screen_center_map_x, screen_center_map_y-1, screen_center_map_z, DEFAULT_VOXEL_COLOR);
-            //set_voxel_to_surface(screen_center_map_x-1, screen_center_map_y, screen_center_map_z, DEFAULT_VOXEL_COLOR);
-            //set_voxel_to_surface(screen_center_map_x+1, screen_center_map_y, screen_center_map_z, DEFAULT_VOXEL_COLOR);
-            //set_voxel_to_surface(screen_center_map_x, screen_center_map_y+1, screen_center_map_z, DEFAULT_VOXEL_COLOR);
+                float norm_mul = scale/sqrtf(rx*rx+ry*ry+rz*rz);
+                rx *= norm_mul;
+                ry *= norm_mul;
+                rz *= norm_mul;
+                s32 map_x = rx+screen_center_map_x;
+                s32 map_y = ry+screen_center_map_y;
+                s32 map_z = rz+screen_center_map_z;
+                remove_voxel_at(map_x,
+                                map_y,
+                                map_z);
+                int chunk_x = (map_x / LIGHT_CHUNK_SIZE);
+                int chunk_y = (map_y / LIGHT_CHUNK_SIZE);
+                int chunks_per_axis = light_map_size / LIGHT_CHUNK_SIZE;
+                light_map_chunks[(chunk_y*chunks_per_axis)+chunk_x].lit = 0;
+            }
 
+
+            //remove_voxel_at(screen_center_map_x, screen_center_map_y, screen_center_map_z);
         }
     } else {
         last_frame_middle_mouse_down = 0;
     }
     if (right_mouse_down) {
-        
-        *(color_ptr+color_slot_in_column) = 0xFFB469FF; 
+            u8 prev_ao = (*(color_ptr+color_slot_in_column))>>24;
+        *(color_ptr+color_slot_in_column) = (prev_ao<<24)|0xB469FF; 
     }
     pixel_is_undrawn:;
 
@@ -1731,7 +1954,7 @@ Olivec_Canvas vc_render(double dt) {
     frame++;
 
     sun_ang += dt*0.13;
-    if(lighting == STATIC_LIGHTING) {
+    if(lighting == NORMALS_LIGHTING) { //} || lighting == FACE_LIGHTING) {
         sun_ang = 5.5;
     }
     f32 sun_degrees = sun_ang * 57.2958;
@@ -1749,7 +1972,7 @@ Olivec_Canvas vc_render(double dt) {
     if(!lighting) {
         background_color = DAY_BACKGROUND_COLOR;
         amb_light_factor = 1.0;
-    } else if (lighting == STATIC_LIGHTING) {
+    } else if (lighting == NORMALS_LIGHTING) { //} || lighting == FACE_LIGHTING) {
         background_color = DAY_BACKGROUND_COLOR;
         amb_light_factor = 0.8;
     } else {
@@ -1794,12 +2017,13 @@ Olivec_Canvas vc_render(double dt) {
         DEBUG_PRINT_TEXT("view mode:      %s", view_mode_strs[view]);
         DEBUG_PRINT_TEXT("render resolution: %ix%i", max_x-min_x, (max_y+1)-min_y);
         DEBUG_PRINT_TEXT("output resolution: %ix%i", OUTPUT_WIDTH, OUTPUT_HEIGHT);
+        //DEBUG_PRINT_TEXT("voxels drawn: %llu", count_set_bits_in_voxelmap());
         DEBUG_PRINT_TEXT("clear %.2fms", (end_clear-start_clear)*1000.0f);
         DEBUG_PRINT_TEXT("raycast %.2fms", (end_raycast-start_raycast)*1000.0f);
         DEBUG_PRINT_TEXT("light %.2fms", (end_light-start_light)*1000.0f);
         DEBUG_PRINT_TEXT("frametime: %.2fms", (dt*1000.0f));
         DEBUG_PRINT_TEXT("fps: %.2f", (1000.0f / (dt*1000.0f)));
-        DEBUG_PRINT_TEXT("%f,%f", pos_x, pos_y);
+        DEBUG_PRINT_TEXT("%f,%f,%f", pos_x, pos_y, pos_z+eye_height);
 
     }
     
@@ -1855,7 +2079,7 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
     __m256 render_size_ps_vec = _mm256_set1_ps(render_size);
 
-    __m256 height_vec = _mm256_set1_ps(255.0f-pos_z);
+    __m256 height_vec = _mm256_set1_ps(255.0f-cam_pos_z);
 
     f32 fog_r = (background_color&0xFF);
     f32 fog_g = ((background_color>>8)&0xFF);
@@ -1894,356 +2118,429 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     __m256 linear_background_color_g_ps_vec = srgb255_to_linear_256(_mm256_set1_ps((background_color>>8)&0xFF));
     __m256 linear_background_color_b_ps_vec = srgb255_to_linear_256(_mm256_set1_ps((background_color>>16)&0xFF));
 
-    for(int base_ox = min_x; base_ox < max_x; base_ox += 8) {
-        //f32 yy = row_y;
-        //f32 xx = row_x;
-        f32 yy = col_y;
-        f32 xx = col_x;
-        //if(oy > (render_height*.75)) { 
-        //    printf("wtf\n");
-        //}
     #if 1
-        __m256 yy_vec = _mm256_setr_ps(
-            yy,            yy+dy_per_x,   yy+dy_per_x*2, yy+dy_per_x*3,
-            yy+dy_per_x*4, yy+dy_per_x*5, yy+dy_per_x*6, yy+dy_per_x*7
-        );
-        __m256 xx_vec = _mm256_setr_ps(
-            xx,            xx+dx_per_x,   xx+dx_per_x*2, xx+dx_per_x*3,
-            xx+dx_per_x*4, xx+dx_per_x*5, xx+dx_per_x*6, xx+dx_per_x*7
-        ); 
-        // __m256 yy_vec = _mm256_setr_ps(
-        //    yy,            yy+dy_per_y,   yy+dy_per_y*2, yy+dy_per_y*3,
-        //    yy+dy_per_y*4, yy+dy_per_y*5, yy+dy_per_y*6, yy+dy_per_y*7
-        //);
-        //__m256 xx_vec = _mm256_setr_ps(
-        //    xx,            xx+dx_per_y,   xx+dx_per_y*2, xx+dx_per_y*3,
-        //    xx+dx_per_y*4, xx+dx_per_y*5, xx+dx_per_y*6, xx+dx_per_y*7
-        //); 
-
-            
-        // ~14 cycles per pixel (14*8 per iteration ~109-112 cycles) w/ fancy lighting and fancy fog
-        // ~13 cycles with no lighting and fog
-        // ~12 cycles with no lighting and no fog
-        
-        //profile_block rotate_light_and_blend_per_row;
-        //TimeBlock(rotate_light_and_blend_per_row, "rotate light and blend per-pixel");
-        for(int oy = min_y; oy < max_y; oy++) { 
-            __m256i iyys = _mm256_add_epi32(y_buffer_vec, _mm256_cvtps_epi32(yy_vec)); 
-            __m256i ixxs = _mm256_add_epi32(x_buffer_vec, _mm256_cvtps_epi32(xx_vec));
-            
-            //yy_vec = _mm256_add_ps(yy_vec, dy_per_x_vec);
-            //xx_vec = _mm256_add_ps(xx_vec, dx_per_x_vec);
-            yy_vec = _mm256_add_ps(yy_vec, dy_per_y_vec);
-            xx_vec = _mm256_add_ps(xx_vec, dx_per_y_vec);
-            //yy += dy_per_x;
-            //xx += dx_per_x;
-            __m256i buf_idxs = fb_swizzle_256(ixxs, iyys);
-            __m256i world_space_poses = _mm256_i32gather_epi32((u32*)world_pos_buffer, buf_idxs, 4);
-            __m256i xs = _mm256_srli_epi32(world_space_poses, 19);
-            __m256i ys = _mm256_and_si256(_mm256_srli_epi32(world_space_poses, 8), low_eleven_bits_mask);
-            __m256 dxs = _mm256_sub_ps(pos_x_vec, _mm256_cvtepi32_ps(xs));
-            __m256 dys = _mm256_sub_ps(pos_y_vec, _mm256_cvtepi32_ps(ys));
-            __m256 float_depths = _mm256_sqrt_ps(_mm256_add_ps(_mm256_mul_ps(dxs, dxs), _mm256_mul_ps(dys, dys)));
-
-            __m256i color_idxs = _mm256_and_si256(world_space_poses, low_seven_bits_mask);
-            // undrawn = world_space_poses == undrawn_bit_mask_vec, which is 0b10000000
-            __m256i undrawn = _mm256_cmpeq_epi32(undrawn_bit_mask_vec, _mm256_and_si256(undrawn_bit_mask_vec, world_space_poses));
-            __m256i depths_eq_max = undrawn;
-            
-            
-            // !! this code was using world-coordinates to look up albedos
-            // it works great if you don't need transparency.  requires 32 less bits in the g-buffer to not store albedos
-            //__m256i voxelmap_idxs = get_voxelmap_idx_256(xs, ys);
-
-            // each column is 128 rgbas
-            // which is 512 
-            //__m256i shifted_voxelmap_idxs = _mm256_slli_epi32(voxelmap_idxs, 6); // for 7 bits of color_idx // 8 for 256 color tall columns
-            //__m256i color_voxelmap_idxs = _mm256_add_epi32(shifted_voxelmap_idxs, color_idxs);
-
-            //__m256i albedos = _mm256_i32gather_epi32((u32*)columns_colors_data, color_voxelmap_idxs, 4);
-            //albedos = _mm256_blendv_epi8(albedos, background_color_vec, undrawn);
-
-
-
-            __m256i albedos = _mm256_i32gather_epi32((s32*)albedo_buffer, buf_idxs, 4);
-
-            // aaaaabbbbbgggggrrrrr
-            //             rrrrr000
-            //             ggggg000
-            __m256i albedo_rs = _mm256_and_si256(albedos, low_eight_bits_mask);
-            __m256i albedo_gs = _mm256_and_si256(_mm256_srli_epi32(albedos, 8), low_eight_bits_mask);
-            __m256i albedo_bs = _mm256_and_si256(_mm256_srli_epi32(albedos, 16), low_eight_bits_mask);
-
-
-            __m256 float_rs = srgb255_to_linear_256(_mm256_cvtepi32_ps(albedo_rs));
-            __m256 float_gs  = srgb255_to_linear_256(_mm256_cvtepi32_ps(albedo_gs));
-            __m256 float_bs = srgb255_to_linear_256(_mm256_cvtepi32_ps(albedo_bs));
-
-            __m256i albedo_coverages = _mm256_and_si256(_mm256_srli_epi32(albedos, 24), low_two_bits_mask);
-            __m256i opaque_pixels = _mm256_cmpeq_epi32(low_two_bits_mask, albedo_coverages);
-            __m256i fully_transparent_pixels = _mm256_cmpeq_epi32(_mm256_set1_epi32(0), albedo_coverages);
-            u32 opaque_pixels_mask = _mm256_movemask_epi8(opaque_pixels);
-            u32 fully_transparent_pixels_mask = _mm256_movemask_epi8(fully_transparent_pixels);
-
-            
-            // 0 to 1
-            // for opaque pixels this will be zero 
-            // for partially transparent pixels this will be some non-zero number :) 
-            __m256 one_minus_old_coverages = _mm256_div_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(low_two_bits_mask, albedo_coverages)), _mm256_set1_ps(3.0));
-            
-            float_rs = _mm256_min_ps(one_ps_vec, 
-                                    _mm256_add_ps(float_rs, 
-                                                    _mm256_mul_ps(linear_background_color_r_ps_vec, one_minus_old_coverages)));
-            float_gs = _mm256_min_ps(one_ps_vec, 
-                                    _mm256_add_ps(float_gs, 
-                                                _mm256_mul_ps(linear_background_color_g_ps_vec, one_minus_old_coverages)));
-            float_bs = _mm256_min_ps(one_ps_vec, 
-                                    _mm256_add_ps(float_bs, 
-                                                _mm256_mul_ps(linear_background_color_b_ps_vec, one_minus_old_coverages)));
-            
-
-            // blend non-opaque pixels 
-            //
-
-            __m256i int_rs, int_gs, int_bs;
-
-            //__m256i world_zs_ints = _mm256_and_si256(low_ten_bits_mask, world_poses);
-            //__m256 world_zs = _mm256_cvtepi32_ps(world_zs_ints);
-            //__m256 world_ys = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(world_poses, 10), low_ten_bits_mask));
-            //__m256 world_xs = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(world_poses, 20), low_ten_bits_mask));
-            //__m256 world_dys = _mm256_min_ps(
-            //                        abs_ps(_mm256_sub_ps(world_ys, pos_y_vec)),
-            //                        abs_ps(_mm256_sub_ps(world_ys, _mm256_add_ps(pos_y_vec, ten_twenty_four_vec))));
-            //__m256 world_dxs = _mm256_min_ps(
-            //                        abs_ps(_mm256_sub_ps(world_xs, pos_x_vec)),
-            //                        abs_ps(_mm256_sub_ps(world_xs, _mm256_add_ps(pos_x_vec, ten_twenty_four_vec))));
-            //__m256 world_dzs = _mm256_sub_ps(world_zs, inverse_height_vec);
-            //__m256i depths_eq_max = _mm256_cmpeq_epi32(world_zs_ints, tenth_bit_mask);
-
-            //__m256 float_depths = _mm256_sqrt_ps(
-            //                        _mm256_add_ps(_mm256_mul_ps(world_dys, world_dys), 
-            //                                         _mm256_mul_ps(world_dxs, world_dxs)));
-            
-            //float_depths = _mm256_blendv_ps(float_depths, _mm256_set1_ps(max_z), (__m256)depths_eq_max);
-
-            //__m256i depths = _mm256_and_si256(gbuf_entries, depth_mask_vec);
-            //__m256i depths_eq_max = _mm256_cmpeq_epi32(depths, _mm256_set1_epi32(65535));
-            //__m256 float_depths = _mm256_mul_ps(_mm256_cvtepi32_ps(depths), one_over_fix_scale_vec);
-         
-            // 32-bit norm_pt1, norm_pt2
-            // 32-bit, 27-bit world position (plus top 5-bits of color?)
-            // 19-bit color
-            //
-            
-            __m256 encoded_normal_xs = _mm256_i32gather_ps((f32*)norm_buffer, buf_idxs, 8);
-            __m256 encoded_normal_ys = _mm256_i32gather_ps((f32*)(norm_buffer+1), buf_idxs, 8);
-
-
-
-            __m256 normal_xs = _mm256_add_ps(encoded_normal_xs, encoded_normal_ys);
-            __m256 normal_ys = _mm256_sub_ps(encoded_normal_xs, encoded_normal_ys);
-            __m256 abs_normal_xs = abs_ps(normal_xs);
-            __m256 abs_normal_ys = abs_ps(normal_ys);
-            __m256 normal_zs = _mm256_sub_ps(_mm256_sub_ps(two_ps_vec, abs_normal_xs), abs_normal_ys);
-            __m256 recip_mag_norm = reciprocal_magnitude_vector_256(normal_xs, normal_ys, normal_zs);
-            normal_xs = _mm256_mul_ps(normal_xs, recip_mag_norm);
-            normal_ys = _mm256_mul_ps(normal_ys, recip_mag_norm);
-            normal_zs = _mm256_mul_ps(normal_zs, recip_mag_norm);
-
-            // y,x,z looks pretty good
-            // x,y,z looks vaporwave
-
-
-            // z,y,x looks ok
-            if(view == VIEW_NORMALS) {
-                float_rs = (normal_ys + 1.0)/2.0;
-                float_gs = (normal_xs + 1.0)/2.0;
-                float_bs = (normal_zs + 1.0)/2.0;
-
-            } else if (view == VIEW_DEPTH) {
-                // this is now 0.0 to 1.0
-                __m256 depth_zero_to_one = _mm256_div_ps(float_depths, _mm256_set1_ps(max_z));
-                __m256 depth_brightness = lerp256(one_ps_vec, depth_zero_to_one, zero_ps_vec);
-                depth_brightness = _mm256_blendv_ps(depth_brightness, zero_ps_vec, (__m256)depths_eq_max);
-                float_rs = depth_brightness;
-                float_gs = depth_brightness;
-                float_bs = depth_brightness;
-            
-            } else if (view == VIEW_STANDARD) {
-
-            
-                if(lighting) { // } == FANCY_LIGHTING) {
-                    __m256 dot_lights = //_mm256_add_ps(
-                                            //_mm256_mul_ps(normal_xs, sun_vec_x_vec),
-                                            _mm256_add_ps(_mm256_mul_ps(normal_ys, sun_vec_y_vec),
-                                                            _mm256_mul_ps(normal_zs, sun_vec_z_vec));//);
-
-                    __m256 color_norm_scales = _mm256_min_ps(one_ps_vec, 
-                                                    _mm256_add_ps(_mm256_max_ps(zero_ps_vec, 
-                                                                                _mm256_min_ps(dot_lights, _mm256_set1_ps(.25))), 
-                                                                  amb_light_factor_vec));
-                    
-                    __m256 depth_color_factor = _mm256_andnot_ps((__m256)depths_eq_max, color_norm_scales);
-                    
-
-                    //for(int i = 0; i < 8; i++) {
-                    //    if(_mm256_)
-                    //}
-
-                    float_rs = _mm256_mul_ps(depth_color_factor, float_rs); 
-                    float_bs = _mm256_mul_ps(depth_color_factor, float_bs); 
-                    float_gs = _mm256_mul_ps(depth_color_factor, float_gs); 
-                } else if (lighting) {
-                    __m256 dot_lights = //_mm256_add_ps(
-                                            //_mm256_mul_ps(normal_xs, sun_vec_x_vec),
-                                            _mm256_add_ps(_mm256_mul_ps(normal_ys, sun_vec_y_vec),
-                                                            _mm256_mul_ps(normal_zs, sun_vec_z_vec));//);
-
-                    __m256 color_norm_scales = _mm256_min_ps(one_ps_vec, 
-                                                    _mm256_add_ps(_mm256_max_ps(zero_ps_vec, 
-                                                                                _mm256_min_ps(dot_lights, _mm256_set1_ps(.25))), 
-                                                                  amb_light_factor_vec));
-                    
-                    __m256 depth_color_factor = _mm256_andnot_ps((__m256)depths_eq_max, color_norm_scales);
-
-                    float_rs = _mm256_mul_ps(depth_color_factor, float_rs); 
-                    float_bs = _mm256_mul_ps(depth_color_factor, float_bs); 
-                    float_gs = _mm256_mul_ps(depth_color_factor, float_gs); 
-
-                } else {
-                    //__m256 depth_amb_factor = _mm256_andnot_ps((__m256)depths_eq_max, amb_light_factor_vec);
-                    //float_rs = _mm256_mul_ps(depth_amb_factor, float_rs); 
-                    //float_bs = _mm256_mul_ps(depth_amb_factor, float_bs); 
-                    //float_gs = _mm256_mul_ps(depth_amb_factor, float_gs); 
-                }
-
-                if(ambient_occlusion) {
-                    __m256i albedo_ao = _mm256_and_si256(_mm256_srli_epi32(albedos, 26), low_eight_bits_mask);
-                    __m256 ao_float = _mm256_div_ps(_mm256_cvtepi32_ps(albedo_ao), _mm256_set1_ps(63.0)); //255.0));
-                    float_rs = _mm256_mul_ps(ao_float, float_rs);
-                    float_gs = _mm256_mul_ps(ao_float, float_gs);
-                    float_bs = _mm256_mul_ps(ao_float, float_bs);
-                }
-                    //float_rs = _mm256_blendv_ps(float_rs, fog_rs, (__m256)depths_eq_max);
-                    //float_gs = _mm256_blendv_ps(float_gs, fog_gs, (__m256)depths_eq_max);
-                    //float_bs = _mm256_blendv_ps(float_bs, fog_bs, (__m256)depths_eq_max);
-                    //float_rs = _mm256_mul_ps(depth_color_factor, float_rs); 
-                    //float_bs = _mm256_mul_ps(depth_color_factor, float_bs); 
-                    //float_gs = _mm256_mul_ps(depth_color_factor, float_gs); 
-
-                if(fogmode) {
-                    //f32 z_to_1 = (avg_dist*one_over_max_z)*(avg_dist*one_over_max_z);
-                    __m256 z_to_ones = _mm256_min_ps(one_ps_vec, _mm256_mul_ps(float_depths, one_over_max_z_vec));
-                    z_to_ones = _mm256_mul_ps(z_to_ones, z_to_ones);
-                    z_to_ones = _mm256_mul_ps(z_to_ones, z_to_ones);
-                    __m256 fog_factors = lerp256(zero_ps_vec, z_to_ones, one_ps_vec);
-                    __m256 one_minus_fog_factors = _mm256_sub_ps(one_ps_vec, fog_factors);
-                    //f32 fog_factor = lerp(0, z_to_1, 1);
-                    //one_minus_fog = 1-fog_factor;
-                    __m256 mult_fog_rs = _mm256_mul_ps(fog_factors, fog_rs);
-                    __m256 mult_fog_gs = _mm256_mul_ps(fog_factors, fog_gs);
-                    __m256 mult_fog_bs = _mm256_mul_ps(fog_factors, fog_bs);
-                    __m256 mult_rs = _mm256_mul_ps(one_minus_fog_factors, float_rs);
-                    __m256 mult_gs = _mm256_mul_ps(one_minus_fog_factors, float_gs);
-                    __m256 mult_bs = _mm256_mul_ps(one_minus_fog_factors, float_bs);
-                    float_rs = _mm256_add_ps(mult_fog_rs, mult_rs);
-                    float_gs = _mm256_add_ps(mult_fog_gs, mult_gs);
-                    float_bs = _mm256_add_ps(mult_fog_bs, mult_bs);
-                }
-                float_rs = _mm256_blendv_ps(float_rs, fog_rs, (__m256)depths_eq_max);
-                float_gs = _mm256_blendv_ps(float_gs, fog_gs, (__m256)depths_eq_max);
-                float_bs = _mm256_blendv_ps(float_bs, fog_bs, (__m256)depths_eq_max);
-            }
-
-
-            int_rs = linear_to_srgb_255_256(float_rs); // _mm256_cvtps_epi32(float_rs);
-            int_gs = linear_to_srgb_255_256(float_gs); //_mm256_cvtps_epi32(float_gs);
-            int_bs = linear_to_srgb_255_256(float_bs); //_mm256_cvtps_epi32(float_bs);
-
-
-            __m256i rgbs = _mm256_or_si256(
-                _mm256_or_si256(alpha_vec, _mm256_slli_epi32(int_bs, 16)),
-                _mm256_or_si256(_mm256_slli_epi32(int_gs, 8), int_rs)
+        for(int base_ox = min_x; base_ox < max_x; base_ox += 8) {
+            //f32 yy = row_y;
+            //f32 xx = row_x;
+            f32 yy = col_y;
+            f32 xx = col_x;
+            //if(oy > (render_height*.75)) { 
+            //    printf("wtf\n");
+            //}
+            __m256 yy_vec = _mm256_setr_ps(
+                yy,            yy+dy_per_x,   yy+dy_per_x*2, yy+dy_per_x*3,
+                yy+dy_per_x*4, yy+dy_per_x*5, yy+dy_per_x*6, yy+dy_per_x*7
             );
-            if(0) { //double_pixels == 2) {
-                __m256i out_reg1_selectors = _mm256_setr_epi32(0,0,0,0,1,1,1,1);
-                __m256i out_reg2_selectors = _mm256_setr_epi32(2,2,2,2,3,3,3,3);
-                __m256i out_reg3_selectors = _mm256_setr_epi32(4,4,4,4,5,5,5,5);
-                __m256i out_reg4_selectors = _mm256_setr_epi32(6,6,6,6,7,7,7,7);
-                u32* pix_ptr = &pixels[(oy*4)*OUTPUT_WIDTH+(base_ox*4)+0];
-                __m256i out_reg1 = _mm256_permutevar8x32_epi32(rgbs, out_reg1_selectors);
-                __m256i out_reg2 = _mm256_permutevar8x32_epi32(rgbs, out_reg2_selectors);
-                __m256i out_reg3 = _mm256_permutevar8x32_epi32(rgbs, out_reg3_selectors);
-                __m256i out_reg4 = _mm256_permutevar8x32_epi32(rgbs, out_reg4_selectors);
-                for(int i = 0; i < 4; i++) {
-                    _mm256_store_si256((__m256i*)(pix_ptr+(OUTPUT_WIDTH*i)), out_reg1);
-                    _mm256_store_si256((__m256i*)(pix_ptr+(OUTPUT_WIDTH*i)+8), out_reg2);
-                    _mm256_store_si256((__m256i*)(pix_ptr+(OUTPUT_WIDTH*i)+16), out_reg3);
-                    _mm256_store_si256((__m256i*)(pix_ptr+(OUTPUT_WIDTH*i)+24), out_reg4);
-                }
-               
+            __m256 xx_vec = _mm256_setr_ps(
+                xx,            xx+dx_per_x,   xx+dx_per_x*2, xx+dx_per_x*3,
+                xx+dx_per_x*4, xx+dx_per_x*5, xx+dx_per_x*6, xx+dx_per_x*7
+            ); 
+            // __m256 yy_vec = _mm256_setr_ps(
+            //    yy,            yy+dy_per_y,   yy+dy_per_y*2, yy+dy_per_y*3,
+            //    yy+dy_per_y*4, yy+dy_per_y*5, yy+dy_per_y*6, yy+dy_per_y*7
+            //);
+            //__m256 xx_vec = _mm256_setr_ps(
+            //    xx,            xx+dx_per_y,   xx+dx_per_y*2, xx+dx_per_y*3,
+            //    xx+dx_per_y*4, xx+dx_per_y*5, xx+dx_per_y*6, xx+dx_per_y*7
+            //); 
 
-            } else if (0) { //double_pixels == 1) { 
-                __m256i out_reg1_selectors = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
-                __m256i out_reg2_selectors = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
-                u32* pix_ptr = &pixels[(oy*2)*OUTPUT_WIDTH+(base_ox*2)];
-                __m256i out_reg1 = _mm256_permutevar8x32_epi32(rgbs, out_reg1_selectors);
-                __m256i out_reg2 = _mm256_permutevar8x32_epi32(rgbs, out_reg2_selectors);
-                _mm256_store_si256((__m256i*)pix_ptr, out_reg1);
-                _mm256_store_si256((__m256i*)(pix_ptr+8), out_reg2);
-                _mm256_store_si256((__m256i*)(pix_ptr+OUTPUT_WIDTH), out_reg1);
-                _mm256_store_si256((__m256i*)(pix_ptr+OUTPUT_WIDTH+8), out_reg2);
-            } else {
-                //pixels[oy*render_width+(ox)] = pix;  
-                u32* pix_ptr = &pixels[oy*render_width+base_ox];   
-                //u32* pix_ptr = &pixels[oy*render_width];   
-                _mm256_store_si256((__m256i*)pix_ptr, rgbs);
+                
+            // ~14 cycles per pixel (14*8 per iteration ~109-112 cycles) w/ fancy lighting and fancy fog
+            // ~13 cycles with no lighting and fog
+            // ~12 cycles with no lighting and no fog
+            
+            //profile_block rotate_light_and_blend_per_row;
+            //TimeBlock(rotate_light_and_blend_per_row, "rotate light and blend per-pixel");
+            for(int oy = min_y; oy < max_y; oy++) { 
+                __m256i iyys = _mm256_add_epi32(y_buffer_vec, _mm256_cvtps_epi32(yy_vec)); 
+                __m256i ixxs = _mm256_add_epi32(x_buffer_vec, _mm256_cvtps_epi32(xx_vec));
+                
+                //yy_vec = _mm256_add_ps(yy_vec, dy_per_x_vec);
+                //xx_vec = _mm256_add_ps(xx_vec, dx_per_x_vec);
+                yy_vec = _mm256_add_ps(yy_vec, dy_per_y_vec);
+                xx_vec = _mm256_add_ps(xx_vec, dx_per_y_vec);
+                //yy += dy_per_x;
+                //xx += dx_per_x;
+                __m256i buf_idxs = fb_swizzle_256(ixxs, iyys);
+                __m256i world_space_poses = _mm256_i32gather_epi32((u32*)world_pos_buffer, buf_idxs, 4);
+                __m256i xs = _mm256_srli_epi32(world_space_poses, 19);
+                __m256i ys = _mm256_and_si256(_mm256_srli_epi32(world_space_poses, 8), low_eleven_bits_mask);
+                __m256 dxs = _mm256_sub_ps(pos_x_vec, _mm256_cvtepi32_ps(xs));
+                __m256 dys = _mm256_sub_ps(pos_y_vec, _mm256_cvtepi32_ps(ys));
+                __m256 float_depths = _mm256_sqrt_ps(_mm256_add_ps(_mm256_mul_ps(dxs, dxs), _mm256_mul_ps(dys, dys)));
+
+                __m256i color_idxs = _mm256_and_si256(world_space_poses, low_seven_bits_mask);
+                // undrawn = world_space_poses == undrawn_bit_mask_vec, which is 0b10000000
+                __m256i undrawn = _mm256_cmpeq_epi32(undrawn_bit_mask_vec, _mm256_and_si256(undrawn_bit_mask_vec, world_space_poses));
+                __m256i depths_eq_max = undrawn;
+                
+                
+                // !! this code was using world-coordinates to look up albedos
+                // it works great if you don't need transparency.  requires 32 less bits in the g-buffer to not store albedos
+                //__m256i voxelmap_idxs = get_voxelmap_idx_256(xs, ys);
+
+                // each column is 128 rgbas
+                // which is 512 
+                //__m256i shifted_voxelmap_idxs = _mm256_slli_epi32(voxelmap_idxs, 6); // for 7 bits of color_idx // 8 for 256 color tall columns
+                //__m256i color_voxelmap_idxs = _mm256_add_epi32(shifted_voxelmap_idxs, color_idxs);
+
+                //__m256i albedos = _mm256_i32gather_epi32((u32*)columns_colors_data, color_voxelmap_idxs, 4);
+                //albedos = _mm256_blendv_epi8(albedos, background_color_vec, undrawn);
+
+
+
+                __m256i albedos = _mm256_i32gather_epi32((s32*)albedo_buffer, buf_idxs, 4);
+
+                // aaaaabbbbbgggggrrrrr
+                //             rrrrr000
+                //             ggggg000
+                __m256i albedo_rs = _mm256_and_si256(albedos, low_eight_bits_mask);
+                __m256i albedo_gs = _mm256_and_si256(_mm256_srli_epi32(albedos, 8), low_eight_bits_mask);
+                __m256i albedo_bs = _mm256_and_si256(_mm256_srli_epi32(albedos, 16), low_eight_bits_mask);
+
+
+                __m256 float_rs = srgb255_to_linear_256(_mm256_cvtepi32_ps(albedo_rs));
+                __m256 float_gs  = srgb255_to_linear_256(_mm256_cvtepi32_ps(albedo_gs));
+                __m256 float_bs = srgb255_to_linear_256(_mm256_cvtepi32_ps(albedo_bs));
+
+                __m256i albedo_coverages = _mm256_and_si256(_mm256_srli_epi32(albedos, 24), low_two_bits_mask);
+                __m256i opaque_pixels = _mm256_cmpeq_epi32(low_two_bits_mask, albedo_coverages);
+                __m256i fully_transparent_pixels = _mm256_cmpeq_epi32(_mm256_set1_epi32(0), albedo_coverages);
+                u32 opaque_pixels_mask = _mm256_movemask_epi8(opaque_pixels);
+                u32 fully_transparent_pixels_mask = _mm256_movemask_epi8(fully_transparent_pixels);
+
+                
+                // 0 to 1
+                // for opaque pixels this will be zero 
+                // for partially transparent pixels this will be some non-zero number :) 
+                __m256 one_minus_old_coverages = _mm256_div_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(low_two_bits_mask, albedo_coverages)), _mm256_set1_ps(3.0));
+                
+                float_rs = _mm256_min_ps(one_ps_vec, 
+                                        _mm256_add_ps(float_rs, 
+                                                        _mm256_mul_ps(linear_background_color_r_ps_vec, one_minus_old_coverages)));
+                float_gs = _mm256_min_ps(one_ps_vec, 
+                                        _mm256_add_ps(float_gs, 
+                                                    _mm256_mul_ps(linear_background_color_g_ps_vec, one_minus_old_coverages)));
+                float_bs = _mm256_min_ps(one_ps_vec, 
+                                        _mm256_add_ps(float_bs, 
+                                                    _mm256_mul_ps(linear_background_color_b_ps_vec, one_minus_old_coverages)));
+                
+
+                // blend non-opaque pixels 
+                //
+
+                __m256i int_rs, int_gs, int_bs;
+
+                //__m256i world_zs_ints = _mm256_and_si256(low_ten_bits_mask, world_poses);
+                //__m256 world_zs = _mm256_cvtepi32_ps(world_zs_ints);
+                //__m256 world_ys = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(world_poses, 10), low_ten_bits_mask));
+                //__m256 world_xs = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32(world_poses, 20), low_ten_bits_mask));
+                //__m256 world_dys = _mm256_min_ps(
+                //                        abs_ps(_mm256_sub_ps(world_ys, pos_y_vec)),
+                //                        abs_ps(_mm256_sub_ps(world_ys, _mm256_add_ps(pos_y_vec, ten_twenty_four_vec))));
+                //__m256 world_dxs = _mm256_min_ps(
+                //                        abs_ps(_mm256_sub_ps(world_xs, pos_x_vec)),
+                //                        abs_ps(_mm256_sub_ps(world_xs, _mm256_add_ps(pos_x_vec, ten_twenty_four_vec))));
+                //__m256 world_dzs = _mm256_sub_ps(world_zs, inverse_height_vec);
+                //__m256i depths_eq_max = _mm256_cmpeq_epi32(world_zs_ints, tenth_bit_mask);
+
+                //__m256 float_depths = _mm256_sqrt_ps(
+                //                        _mm256_add_ps(_mm256_mul_ps(world_dys, world_dys), 
+                //                                         _mm256_mul_ps(world_dxs, world_dxs)));
+                
+                //float_depths = _mm256_blendv_ps(float_depths, _mm256_set1_ps(max_z), (__m256)depths_eq_max);
+
+                //__m256i depths = _mm256_and_si256(gbuf_entries, depth_mask_vec);
+                //__m256i depths_eq_max = _mm256_cmpeq_epi32(depths, _mm256_set1_epi32(65535));
+                //__m256 float_depths = _mm256_mul_ps(_mm256_cvtepi32_ps(depths), one_over_fix_scale_vec);
+            
+                // 32-bit norm_pt1, norm_pt2
+                // 32-bit, 27-bit world position (plus top 5-bits of color?)
+                // 19-bit color
+                //
+                
+                __m256 encoded_normal_xs = _mm256_i32gather_ps((f32*)norm_buffer, buf_idxs, 8);
+                __m256 encoded_normal_ys = _mm256_i32gather_ps((f32*)(norm_buffer+1), buf_idxs, 8);
+
+
+
+                __m256 normal_xs = _mm256_add_ps(encoded_normal_xs, encoded_normal_ys);
+                __m256 normal_ys = _mm256_sub_ps(encoded_normal_xs, encoded_normal_ys);
+                __m256 abs_normal_xs = abs_ps(normal_xs);
+                __m256 abs_normal_ys = abs_ps(normal_ys);
+                __m256 normal_zs = _mm256_sub_ps(_mm256_sub_ps(two_ps_vec, abs_normal_xs), abs_normal_ys);
+                __m256 recip_mag_norm = reciprocal_magnitude_vector_256(normal_xs, normal_ys, normal_zs);
+                normal_xs = _mm256_mul_ps(normal_xs, recip_mag_norm);
+                normal_ys = _mm256_mul_ps(normal_ys, recip_mag_norm);
+                normal_zs = _mm256_mul_ps(normal_zs, recip_mag_norm);
+
+                // y,x,z looks pretty good
+                // x,y,z looks vaporwave
+
+
+                // z,y,x looks ok
+                if(view == VIEW_NORMALS) {
+                    float_rs = (normal_ys + 1.0)/2.0;
+                    float_gs = (normal_xs + 1.0)/2.0;
+                    float_bs = (normal_zs + 1.0)/2.0;
+
+                } else if (view == VIEW_DEPTH) {
+                    // this is now 0.0 to 1.0
+                    __m256 depth_zero_to_one = _mm256_div_ps(float_depths, _mm256_set1_ps(max_z));
+                    __m256 depth_brightness = lerp256(one_ps_vec, depth_zero_to_one, zero_ps_vec);
+                    depth_brightness = _mm256_blendv_ps(depth_brightness, zero_ps_vec, (__m256)depths_eq_max);
+                    float_rs = depth_brightness;
+                    float_gs = depth_brightness;
+                    float_bs = depth_brightness;
+                
+                } else if (view == VIEW_STANDARD) {
+
+                
+                    if(lighting) { // } == FANCY_LIGHTING) {
+                        __m256 dot_lights = //_mm256_add_ps(
+                                                //_mm256_mul_ps(normal_xs, sun_vec_x_vec),
+                                                _mm256_add_ps(_mm256_mul_ps(normal_ys, sun_vec_y_vec),
+                                                                _mm256_mul_ps(normal_zs, sun_vec_z_vec));//);
+
+                        __m256 color_norm_scales = _mm256_min_ps(one_ps_vec, 
+                                                        _mm256_add_ps(_mm256_max_ps(zero_ps_vec, 
+                                                                                    _mm256_min_ps(dot_lights, _mm256_set1_ps(.25))), 
+                                                                    amb_light_factor_vec));
+                        
+                        __m256 depth_color_factor = _mm256_andnot_ps((__m256)depths_eq_max, color_norm_scales);
+                        
+
+                        //for(int i = 0; i < 8; i++) {
+                        //    if(_mm256_)
+                        //}
+
+                        float_rs = _mm256_mul_ps(depth_color_factor, float_rs); 
+                        float_bs = _mm256_mul_ps(depth_color_factor, float_bs); 
+                        float_gs = _mm256_mul_ps(depth_color_factor, float_gs); 
+                    } else if (lighting) {
+                        __m256 dot_lights = //_mm256_add_ps(
+                                                //_mm256_mul_ps(normal_xs, sun_vec_x_vec),
+                                                _mm256_add_ps(_mm256_mul_ps(normal_ys, sun_vec_y_vec),
+                                                                _mm256_mul_ps(normal_zs, sun_vec_z_vec));//);
+
+                        __m256 color_norm_scales = _mm256_min_ps(one_ps_vec, 
+                                                        _mm256_add_ps(_mm256_max_ps(zero_ps_vec, 
+                                                                                    _mm256_min_ps(dot_lights, _mm256_set1_ps(.25))), 
+                                                                    amb_light_factor_vec));
+                        
+                        __m256 depth_color_factor = _mm256_andnot_ps((__m256)depths_eq_max, color_norm_scales);
+
+                        float_rs = _mm256_mul_ps(depth_color_factor, float_rs); 
+                        float_bs = _mm256_mul_ps(depth_color_factor, float_bs); 
+                        float_gs = _mm256_mul_ps(depth_color_factor, float_gs); 
+
+                    } else {
+                        //__m256 depth_amb_factor = _mm256_andnot_ps((__m256)depths_eq_max, amb_light_factor_vec);
+                        //float_rs = _mm256_mul_ps(depth_amb_factor, float_rs); 
+                        //float_bs = _mm256_mul_ps(depth_amb_factor, float_bs); 
+                        //float_gs = _mm256_mul_ps(depth_amb_factor, float_gs); 
+                    }
+
+                    if(ambient_occlusion) {
+                        __m256i albedo_ao = _mm256_and_si256(_mm256_srli_epi32(albedos, 26), low_eight_bits_mask);
+                        __m256 ao_float = _mm256_div_ps(_mm256_cvtepi32_ps(albedo_ao), _mm256_set1_ps(63.0)); //255.0));
+                        float_rs = _mm256_mul_ps(ao_float, float_rs);
+                        float_gs = _mm256_mul_ps(ao_float, float_gs);
+                        float_bs = _mm256_mul_ps(ao_float, float_bs);
+                    }
+                        //float_rs = _mm256_blendv_ps(float_rs, fog_rs, (__m256)depths_eq_max);
+                        //float_gs = _mm256_blendv_ps(float_gs, fog_gs, (__m256)depths_eq_max);
+                        //float_bs = _mm256_blendv_ps(float_bs, fog_bs, (__m256)depths_eq_max);
+                        //float_rs = _mm256_mul_ps(depth_color_factor, float_rs); 
+                        //float_bs = _mm256_mul_ps(depth_color_factor, float_bs); 
+                        //float_gs = _mm256_mul_ps(depth_color_factor, float_gs); 
+
+                    if(fogmode) {
+                        //f32 z_to_1 = (avg_dist*one_over_max_z)*(avg_dist*one_over_max_z);
+                        __m256 z_to_ones = _mm256_min_ps(one_ps_vec, _mm256_mul_ps(float_depths, one_over_max_z_vec));
+                        z_to_ones = _mm256_mul_ps(z_to_ones, z_to_ones);
+                        z_to_ones = _mm256_mul_ps(z_to_ones, z_to_ones);
+                        __m256 fog_factors = lerp256(zero_ps_vec, z_to_ones, one_ps_vec);
+                        __m256 one_minus_fog_factors = _mm256_sub_ps(one_ps_vec, fog_factors);
+                        //f32 fog_factor = lerp(0, z_to_1, 1);
+                        //one_minus_fog = 1-fog_factor;
+                        __m256 mult_fog_rs = _mm256_mul_ps(fog_factors, fog_rs);
+                        __m256 mult_fog_gs = _mm256_mul_ps(fog_factors, fog_gs);
+                        __m256 mult_fog_bs = _mm256_mul_ps(fog_factors, fog_bs);
+                        __m256 mult_rs = _mm256_mul_ps(one_minus_fog_factors, float_rs);
+                        __m256 mult_gs = _mm256_mul_ps(one_minus_fog_factors, float_gs);
+                        __m256 mult_bs = _mm256_mul_ps(one_minus_fog_factors, float_bs);
+                        float_rs = _mm256_add_ps(mult_fog_rs, mult_rs);
+                        float_gs = _mm256_add_ps(mult_fog_gs, mult_gs);
+                        float_bs = _mm256_add_ps(mult_fog_bs, mult_bs);
+                    }
+                    float_rs = _mm256_blendv_ps(float_rs, fog_rs, (__m256)depths_eq_max);
+                    float_gs = _mm256_blendv_ps(float_gs, fog_gs, (__m256)depths_eq_max);
+                    float_bs = _mm256_blendv_ps(float_bs, fog_bs, (__m256)depths_eq_max);
+                }
+
+
+                int_rs = linear_to_srgb_255_256(float_rs); // _mm256_cvtps_epi32(float_rs);
+                int_gs = linear_to_srgb_255_256(float_gs); //_mm256_cvtps_epi32(float_gs);
+                int_bs = linear_to_srgb_255_256(float_bs); //_mm256_cvtps_epi32(float_bs);
+
+
+                __m256i rgbs = _mm256_or_si256(
+                    _mm256_or_si256(alpha_vec, _mm256_slli_epi32(int_bs, 16)),
+                    _mm256_or_si256(_mm256_slli_epi32(int_gs, 8), int_rs)
+                );
+                if(0) { //double_pixels == 2) {
+                    __m256i out_reg1_selectors = _mm256_setr_epi32(0,0,0,0,1,1,1,1);
+                    __m256i out_reg2_selectors = _mm256_setr_epi32(2,2,2,2,3,3,3,3);
+                    __m256i out_reg3_selectors = _mm256_setr_epi32(4,4,4,4,5,5,5,5);
+                    __m256i out_reg4_selectors = _mm256_setr_epi32(6,6,6,6,7,7,7,7);
+                    u32* pix_ptr = &pixels[(oy*4)*OUTPUT_WIDTH+(base_ox*4)+0];
+                    __m256i out_reg1 = _mm256_permutevar8x32_epi32(rgbs, out_reg1_selectors);
+                    __m256i out_reg2 = _mm256_permutevar8x32_epi32(rgbs, out_reg2_selectors);
+                    __m256i out_reg3 = _mm256_permutevar8x32_epi32(rgbs, out_reg3_selectors);
+                    __m256i out_reg4 = _mm256_permutevar8x32_epi32(rgbs, out_reg4_selectors);
+                    for(int i = 0; i < 4; i++) {
+                        _mm256_store_si256((__m256i*)(pix_ptr+(OUTPUT_WIDTH*i)), out_reg1);
+                        _mm256_store_si256((__m256i*)(pix_ptr+(OUTPUT_WIDTH*i)+8), out_reg2);
+                        _mm256_store_si256((__m256i*)(pix_ptr+(OUTPUT_WIDTH*i)+16), out_reg3);
+                        _mm256_store_si256((__m256i*)(pix_ptr+(OUTPUT_WIDTH*i)+24), out_reg4);
+                    }
+                
+
+                } else if (0) { //double_pixels == 1) { 
+                    __m256i out_reg1_selectors = _mm256_setr_epi32(0,0,1,1,2,2,3,3);
+                    __m256i out_reg2_selectors = _mm256_setr_epi32(4,4,5,5,6,6,7,7);
+                    u32* pix_ptr = &pixels[(oy*2)*OUTPUT_WIDTH+(base_ox*2)];
+                    __m256i out_reg1 = _mm256_permutevar8x32_epi32(rgbs, out_reg1_selectors);
+                    __m256i out_reg2 = _mm256_permutevar8x32_epi32(rgbs, out_reg2_selectors);
+                    _mm256_store_si256((__m256i*)pix_ptr, out_reg1);
+                    _mm256_store_si256((__m256i*)(pix_ptr+8), out_reg2);
+                    _mm256_store_si256((__m256i*)(pix_ptr+OUTPUT_WIDTH), out_reg1);
+                    _mm256_store_si256((__m256i*)(pix_ptr+OUTPUT_WIDTH+8), out_reg2);
+                } else {
+                    //pixels[oy*render_width+(ox)] = pix;  
+                    u32* pix_ptr = &pixels[oy*render_width+base_ox];   
+                    //u32* pix_ptr = &pixels[oy*render_width];   
+                    _mm256_store_si256((__m256i*)pix_ptr, rgbs);
+                }
+                //pix_ptr += 8;
+                //next_row_pix_ptr += 8;
             }
-            //pix_ptr += 8;
-            //next_row_pix_ptr += 8;
+            //EndCountedTimeBlock(rotate_light_and_blend_per_row, (max_y-min_x)*8);
+
+            
+            col_x += dx_per_x*8;
+            col_y += dy_per_x*8;
+            //row_x += dx_per_y;
+            //row_y += dy_per_y;
         }
-        //EndCountedTimeBlock(rotate_light_and_blend_per_row, (max_y-min_x)*8);
     #else
         // scalar version of rotation
         // no support for lighting or fog
-        for(int ox = 0; ox < render_width; ox++) {
+        for(int oy = min_y; oy < max_y; oy++) {
+            int dy = (oy-min_y);
+            int off_y = dy * dy_per_y;
+
+            for(int ox = min_x; ox < max_x; ox++) { 
+                int dx = (ox - min_x);
+                int off_x = dx * dx_per_x;
+
+                s32 iyy = col_y + y_buffer + off_y; //(oy-min_y)*dy_per_y;
+                s32 ixx = col_x + x_buffer + off_x;
+                //yy += dy_per_y;
+                //xx += dx_per_y;
+                u32 fb_idx = fb_swizzle(ixx, iyy);
+                //g_buf_entry entry = g_buffer[fb_idx];
+
+                //f32 z = (1/z_buffer[fb_idx])*scale_height;   //1/10 240
+                //u8 ch = lerp(0, z/max_z, 255);
+                //u32 pix = ((0xFF << 24) | (ch << 16) | (ch << 8) | ch);
+                //u32 pix = inter_buffer[fb_idx];
+                u32 pix = albedo_buffer[fb_idx];// entry.albedo;
+                //u8 r = (short_pix&0b11111)<<3;
+                //u8 g = ((short_pix>>5)&0b11111)<<3;
+                //u8 b = ((short_pix>>10)&0b11111)<<3;
+                //u32 pix = (0xFF << 24) | (b << 16) | (g << 8) | r;
+                
+                u32 world_space_pos = world_pos_buffer[fb_idx];
+                u32 x = (world_space_pos>>19)&0b1111111111;
+                u32 y = (world_space_pos>>8)&0b11111111111;
+                u32 z = (world_space_pos & 0xFF);
+                
+
+                f32 world_dx = pos_x-x;
+                f32 world_dy = pos_y-y;
+                f32 float_depth = sqrtf(world_dx*world_dx+world_dy*world_dy);
+
+                if(0) { //double_pixels) {
+                    int scale_size = (1 << double_pixels); //== 1 ? 2 : 4);
+                    for(int iy = 0; iy < scale_size; iy++) {
+                        for(int ix = 0; ix < scale_size; ix++) {
+                            pixels[((oy*scale_size)+iy)*OUTPUT_WIDTH+(ox*scale_size)+ix] = pix;
+                        }
+                    }
+                } else {
+                    u32 undrawn = world_space_pos == 0b10000000;
+                    u32 depth_eq_max = undrawn;
+                        
+                    if(0) { //fogmode) {
+                        u32 albedo = albedo_buffer[fb_idx];
+
+                        // aaaaabbbbbgggggrrrrr
+                        //             rrrrr000
+                        //             ggggg000
+                        u32 albedo_r = albedo & 0xFF;
+                        u32 albedo_g = (albedo >> 8) & 0xFF;
+                        u32 albedo_b = (albedo >> 16) & 0xFF;
+                        u32 albedo_coverage = (albedo >> 24)&0b11;
+                        f32 one_minus_old_coverage = (0b11-albedo_coverage)/3.0f;
 
 
-            s32 iyy = yy+y_buffer;
-            s32 ixx = xx+x_buffer;
-            yy += dy_per_x;
-            xx += dx_per_x;
-            u32 fb_idx = fb_swizzle(ixx, iyy);
-            g_buf_entry entry = g_buffer[fb_idx];
+                        f32 float_r = srgb255_to_linear(albedo_r);
+                        f32 float_g  = srgb255_to_linear(albedo_g);
+                        f32 float_b = srgb255_to_linear(albedo_b);
 
-            //f32 z = (1/z_buffer[fb_idx])*scale_height;   //1/10 240
-            //u8 ch = lerp(0, z/max_z, 255);
-            //u32 pix = ((0xFF << 24) | (ch << 16) | (ch << 8) | ch);
-            //u32 pix = inter_buffer[fb_idx];
-            u16 short_pix = entry.albedo;
-            u8 r = (short_pix&0b11111)<<3;
-            u8 g = ((short_pix>>5)&0b11111)<<3;
-            u8 b = ((short_pix>>10)&0b11111)<<3;
-            u32 pix = (0xFF << 24) | (b << 16) | (g << 8) | r;
+                        f32 linear_background_color_r = srgb255_to_linear(background_color&0xFF);
+                        f32 linear_background_color_g = srgb255_to_linear((background_color>>8)&0xFF);
+                        f32 linear_background_color_b = srgb255_to_linear((background_color>>16)&0xFF);
+                        float_r = min(1.0f, float_r + linear_background_color_r*one_minus_old_coverage);
+                        float_g = min(1.0f, float_g + linear_background_color_g*one_minus_old_coverage);
+                        float_b = min(1.0f, float_b + linear_background_color_b*one_minus_old_coverage);
+                
+                        //f32 z_to_1 = (avg_dist*one_over_max_z)*(avg_dist*one_over_max_z);
+                        f32 one_over_max_z = 1.0f/max_z;
 
-            if(double_pixels) {
-                int scale_size = (1 << double_pixels); //== 1 ? 2 : 4);
-                for(int iy = 0; iy < scale_size; iy++) {
-                    for(int ix = 0; ix < scale_size; ix++) {
-                        pixels[((oy*scale_size)+iy)*OUTPUT_WIDTH+(ox*scale_size)+ix] = pix;
+                        f32 z_to_one = min(1.0f, float_depth*one_over_max_z);
+                        z_to_one = z_to_one*z_to_one;
+                        z_to_one = z_to_one*z_to_one;
+                        f32 fog_factor = lerp(0.0f, z_to_one, 1.0f);
+                        f32 one_minus_fog_factors = 1.0f-fog_factor;
+                        //f32 fog_factor = lerp(0, z_to_1, 1);
+                        //one_minus_fog = 1-fog_factor;
+                        f32 mult_fog_r = fog_factor*fog_r;
+                        f32 mult_fog_g = fog_factor*fog_g;
+                        f32 mult_fog_b = fog_factor*fog_b;
+                        f32 mult_r = one_minus_fog_factors*float_r;
+                        f32 mult_g = one_minus_fog_factors*float_g;
+                        f32 mult_b = one_minus_fog_factors*float_b;
+                        float_r = mult_fog_r*mult_r;
+                        float_g = mult_fog_g*mult_g;
+                        float_b = mult_fog_b*mult_b;
+                        
+                        u32 int_r = linear_to_srgb_255(float_r); // _mm256_cvtps_epi32(float_rs);
+                        u32 int_g = linear_to_srgb_255(float_g); //_mm256_cvtps_epi32(float_gs);
+                        u32 int_b = linear_to_srgb_255(float_b); //_mm256_cvtps_epi32(float_bs);
+
+                        u32 fogged_pix = (0xFF<<24)|(int_b<<16)|(int_g<<8)|int_r;
+                        pixels[oy*render_width+(ox)] = depth_eq_max ? background_color : fogged_pix;
+                    } else {
+                        pixels[oy*render_width+(ox)] = depth_eq_max ? background_color : pix;
                     }
                 }
-            } else {                
-                pixels[oy*render_width+(ox)] = pix;       
             }
         }
     #endif
-        
-        col_x += dx_per_x*8;
-        col_y += dy_per_x*8;
-        //row_x += dx_per_y;
-        //row_y += dy_per_y;
-    }
+
 
     EndTimeBlock(rotate_light_and_blend_block);
 
@@ -2324,7 +2621,7 @@ s32 world_to_screen(s32 world_pos, f32 height, f32 invz, f32 next_invz, f32 pitc
 
 
 f32 screen_to_world(s32 int_projected_height, f32 z, f32 pitch) {
-    f32 height = 255.0f - pos_z;
+    f32 height = 255.0f - cam_pos_z;
     f32 float_projected_height = int_projected_height - pitch;
     f32 relative_height = float_projected_height * z / scale_height;
 
@@ -2492,7 +2789,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
             }
 
             // check the top of this column against the bottom of the frustum skip drawing it
-            f32 height = 255.0f - pos_z;
+            f32 height = 255.0f - cam_pos_z;
             s32 int_top_of_col_projected_height = world_to_screen(header->top_y, height, invz, next_invz, pitch);
             f32 reverse_projected = screen_to_world(int_top_of_col_projected_height, 1.0f/invz, pitch);
             f32 next_reverse_projected = screen_to_world(int_top_of_col_projected_height, 1.0f/next_invz, pitch);
@@ -2518,6 +2815,9 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
         //f32 new_norm_pt1 = occlusion_bit ? old_norm_pt1 : (face_norm_1);                    
         //f32 new_norm_pt2 = occlusion_bit ? old_norm_pt2 : (face_norm_2);                    
 
+
+        //set_bit_in_bitmap(map_x, map_y, map_z, occlusion_bit ? 0 : 1);                      
+
 #define DRAW_CHUNK_FACE(top, bot, voxel_color_idx) {              \
     u32 fb_idx = fb_swizzle(x,top);                                                         \
     u32 color = top_of_col_color_ptr[voxel_color_idx];                                      \
@@ -2525,7 +2825,8 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     f32 norm_pt2 = top_of_col_norm_pt2_ptr[voxel_color_idx];                                \
     for(int y = top; y < bot; y++) {                                                        \
         u8 occlusion_bit = get_occlusion_bit(x, y);                                         \
-        u32 combined_world_pos = prepared_combined_world_map_pos|(voxel_color_idx);         \
+        s32 map_z = voxel_color_idx;                                                        \
+        u32 combined_world_pos = prepared_combined_world_map_pos|map_z;                     \
         f32 old_norm_pt1 = norm_buffer[fb_idx*2];                                           \
         f32 old_norm_pt2 = norm_buffer[fb_idx*2+1];                                         \
         f32 new_norm_pt1 = occlusion_bit ? old_norm_pt1 : norm_pt1;                         \
@@ -2547,6 +2848,8 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     }                                                                                       \
 }
 
+        //set_bit_in_bitmap(map_x, map_y, map_z, occlusion_bit ? 0 : 1);
+
 // draw side of chunk
 // needs voxel color interpolation
 #define DRAW_CHUNK_SIDE(top, bot) {                           \
@@ -2562,7 +2865,8 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
         f32 norm_pt2 = top_of_col_norm_pt2_ptr[voxel_color_idx];                            \
         u32 old_color = albedo_buffer[fb_idx];                                              \
         u32 mixed_color = mix_colors(old_color, color);                                     \
-        u32 combined_world_pos = prepared_combined_world_map_pos|((voxel_color_idx+color_ptr)-top_of_col_color_ptr);         \
+        s32 map_z = ((voxel_color_idx+color_ptr)-top_of_col_color_ptr);                     \
+        u32 combined_world_pos = prepared_combined_world_map_pos|map_z;                     \
         cur_voxel_color_idx += texel_per_y;                                                 \
         f32 old_norm_pt1 = norm_buffer[fb_idx*2];                                           \
         f32 old_norm_pt2 = norm_buffer[fb_idx*2+1];                                         \
@@ -2631,7 +2935,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
 
     
-#define DRAW_CHUNK_BOTTOM_UP(chunk_top, chunk_bot, is_top_chunk, is_transparent_chunk, break_if_top_below_screen, break_if_bot_above_screen, side_norm_pt1, side_norm_pt2, face_norm_pt1, face_norm_pt2) {         \
+#define DRAW_CHUNK_BOTTOM_UP(chunk_top, chunk_bot, is_top_chunk, is_transparent_chunk, break_if_top_below_screen, break_if_bot_above_screen) {         \
     f32 relative_bot = height-chunk_bot;                                                 \
     f32 relative_top = height-chunk_top;                                                 \
     s32 int_top_face_projected_height = floor(relative_top*next_invz) + pitch;           \
@@ -2640,14 +2944,13 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     s32 int_bot_side_projected_height = floor(relative_bot*invz) + pitch;                \
     s32 top_projected_heightonscreen = (!is_top_chunk) ? int_top_side_projected_height : min(int_top_side_projected_height, int_top_face_projected_height);\
     s32 bot_projected_heightonscreen = is_top_chunk ? int_bot_side_projected_height : max(int_bot_side_projected_height,int_bot_face_projected_height);  \
+    u8 min_coverage = 0b11;                                                              \
     if(break_if_bot_above_screen && bot_projected_heightonscreen < next_drawable_min_y) { \
         break;                                                                            \
     }                                                                                     \
     if(break_if_top_below_screen && top_projected_heightonscreen >= prev_drawn_max_y) {   \
         break;                                                                            \
     }                                                                                     \
-    s32 next_prev_drawn_max_y = is_transparent_chunk ? prev_drawn_max_y : (bot_projected_heightonscreen >= prev_drawn_max_y && top_projected_heightonscreen < prev_drawn_max_y) ? top_projected_heightonscreen : prev_drawn_max_y;             \
-    s32 next_next_drawable_min_y = is_transparent_chunk ? next_drawable_min_y :  (top_projected_heightonscreen <= next_drawable_min_y && bot_projected_heightonscreen > next_drawable_min_y) ? bot_projected_heightonscreen : next_drawable_min_y; \
     s32 clipped_top_heightonscreen = CLAMP(top_projected_heightonscreen, next_drawable_min_y, prev_drawn_max_y);    \
     s32 clipped_bot_heightonscreen = CLAMP(bot_projected_heightonscreen, next_drawable_min_y, prev_drawn_max_y);       \
     s32 unclipped_screen_dy = int_bot_side_projected_height - int_top_side_projected_height;    \
@@ -2665,10 +2968,12 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
         if(clipped_top_side_height < clipped_bot_side_height) {                          \
             DRAW_CHUNK_SIDE(clipped_top_side_height, clipped_bot_side_height); \
         }                                                                                   \
-        if(is_top_chunk && clipped_top_face_height < clipped_top_side_height) {          \
+        if(is_top_chunk && clipped_top_face_height < clipped_top_side_height) { \
             u16 color_offset = (color_ptr - top_of_col_color_ptr);                       \
             DRAW_CHUNK_FACE(clipped_top_face_height, clipped_top_side_height, color_offset); \
         }                                                                        \
+        s32 next_prev_drawn_max_y = (min_coverage < 0b11) ? prev_drawn_max_y : (bot_projected_heightonscreen >= prev_drawn_max_y && top_projected_heightonscreen < prev_drawn_max_y) ? top_projected_heightonscreen : prev_drawn_max_y;             \
+        s32 next_next_drawable_min_y = (min_coverage < 0b11) ? next_drawable_min_y :  (top_projected_heightonscreen <= next_drawable_min_y && bot_projected_heightonscreen > next_drawable_min_y) ? bot_projected_heightonscreen : next_drawable_min_y; \
         prev_drawn_max_y = next_prev_drawn_max_y; \
         next_drawable_min_y = next_next_drawable_min_y; \
     }   \
@@ -2709,7 +3014,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                     
                     if(span_info[run].bot_surface_end > span_info[run].bot_surface_start) {
                         color_ptr -= (span_info[run].bot_surface_end-span_info[run].bot_surface_start);
-                        DRAW_CHUNK(
+                        DRAW_CHUNK_BOTTOM_UP(
                             bot_surface_top, bot_surface_end, 
                             0, //span_info[run].is_top, 
                             ((color_ptr[0]>>24)&0b11) != 0b11,//0, //span_info[run].is_transparent, 
@@ -2720,7 +3025,7 @@ void raycast_scalar(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
                     int top_surface_top = 255 - span_info[run].top_surface_start;
                     int top_surface_bot = 255 - (span_info[run].top_surface_end+1);
                     color_ptr -= ((span_info[run].top_surface_end+1)-span_info[run].top_surface_start);
-                    DRAW_CHUNK(
+                    DRAW_CHUNK_BOTTOM_UP(
                         top_surface_top, top_surface_bot, 
                         1, //span_info[run].is_top, 
                         ((color_ptr[0]>>24)&0b11) != 0b11, //0, //span_info[run].is_transparent, 
@@ -2903,3 +3208,5 @@ void fill_empty_entries(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
     }
     EndTimeBlock(coverage_fill_empty_entries);
 }
+
+

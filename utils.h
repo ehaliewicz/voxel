@@ -15,4 +15,25 @@ u32 u16_to_u32abgr(u16 color_val) {
     return (0xFF)<<24|(b<<19)|(g<<11)|(r<<3);
 }
 
+
+double GetTicks() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double) ts.tv_sec + ts.tv_nsec / 1000000000.0;
+}
+
+void* malloc_wrapper(size_t s, char* buf_name) {
+    printf("Allocating %llu bytes for %s\n", s, buf_name);
+    return malloc(s);
+}
+
+void* realloc_wrapper(void* p, size_t s, char* buf_name) {
+    if(p != NULL) {
+        printf("Freeing and allocating %llu bytes for %s\n", s, buf_name);
+    } else {
+        printf("Allocating %llu bytes for %s\n", s, buf_name);
+    }
+    return realloc(p, s);
+}
+
 #endif

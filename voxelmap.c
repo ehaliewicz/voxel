@@ -51,27 +51,14 @@ typedef struct {
 
 
 // each column is 512 bytes of spans :(
+// now 256 bytes :shrug:
 typedef struct {
-    span runs_info[128];
+    span runs_info[64];
 } column_runs;
 
-// 16 bytes! 
-// wtf
 typedef struct {
-    u32 bmp[4]; // 4 * 32 = 128
+    u64 bits[4];
 } column_bitmaps;
-
-void set_bit_in_bitmap(int z, column_bitmaps* ptr) {
-    int lw_idx = z / 32;
-    int bit_idx = z & 31;
-    ptr->bmp[lw_idx] |= (1 << bit_idx);
-}
-
-u8 get_bit_in_bitmap(int z, column_bitmaps* ptr) {
-    int lw_idx = z / 32;
-    int bit_idx = z & 31;
-    return ptr->bmp[lw_idx] & (1 << bit_idx);
-}
 
 // 1024 -> 10 bits
 // 1024 -> 10 bits
@@ -83,34 +70,36 @@ u8 get_bit_in_bitmap(int z, column_bitmaps* ptr) {
 
 int cur_map_max_height; // usually 63 but not always
 
-column_header* columns_header_data;//[1024*1024];
-column_colors* columns_colors_data;//[1024*1024];
+column_header* columns_header_data;
+column_colors* columns_colors_data;
 
-column_runs* columns_runs_data;//[1024*1024];
-column_normals* columns_norm_data;//[1024*1024];
+column_runs* columns_runs_data;
+column_normals* columns_norm_data;
 
 
-column_header* mip_columns_header_data;//[512*512];
-column_colors* mip_columns_colors_data;//[512*512];
-column_runs* mip_columns_runs_data;//[512*512];
+column_header* mip_columns_header_data;
+column_colors* mip_columns_colors_data;
+column_runs* mip_columns_runs_data;
 
-column_normals* mip_columns_norm_data;//[512*512];
+column_normals* mip_columns_norm_data;
+
+column_bitmaps* columns_bitmaps_data;
 
 static int map_data_allocated = 0;
 
 void allocate_map_data() {
-    columns_header_data = malloc(sizeof(column_header)*1024*1024);
-    columns_colors_data = malloc(sizeof(column_colors)*1024*1024);
-    columns_runs_data = malloc(sizeof(column_runs)*1024*1024);
-    columns_norm_data = malloc(sizeof(column_normals)*1024*1024);
+    columns_header_data = malloc_wrapper(sizeof(column_header)*1024*1024, "column headers");
+    columns_colors_data = malloc_wrapper(sizeof(column_colors)*1024*1024, "column colors");
+    columns_runs_data = malloc_wrapper(sizeof(column_runs)*1024*1024, "column runs");
+    columns_norm_data = malloc_wrapper(sizeof(column_normals)*1024*1024, "column normals");
 
     //mip_columns_header_data = malloc(sizeof(column_header)*512*512);
     //mip_columns_colors_data = malloc(sizeof(column_colors)*512*512);
     //mip_columns_runs_data = malloc(sizeof(column_runs)*512*512);
     //mip_columns_norm_data = malloc(sizeof(column_normals)*512*512);
+    columns_bitmaps_data = malloc_wrapper(sizeof(column_bitmaps)*1024*1024, "column bitmaps");
     map_data_allocated = 1;
 }
-
 
 
 
@@ -124,8 +113,8 @@ u32 get_voxelmap_idx(s32 x, s32 y) {
     u32 tile_y = y >> 8;
 
     // 256x256 chunks
-    y &= 255; // 255 // 511
-    x &= 255; // 255 // 511
+    y &= 255;
+    x &= 255;
     //y &= 1023;
     //x &= 1023;
 
@@ -137,6 +126,64 @@ u32 get_voxelmap_idx(s32 x, s32 y) {
     // 20 bit result
     return (tile_y<<18)|(tile_x<<16)|(high_y<<10)|(high_x<<4)|(low_y<<2)|low_x;
 }
+
+void set_bit_in_bitmap(int z, column_bitmaps* bmp, u64 bit) {
+    int qw_idx = z >> 6;
+    int qw_bit = z & 63;
+    bmp->bits[qw_idx] |= (bit << qw_bit);
+}
+
+u64 get_bit_in_bitmap(int z, column_bitmaps* bmp) {
+    int qw_idx = z >> 6;
+    int qw_bit = z & 63;
+    return bmp->bits[qw_idx] & ((u64)((u64)1) << qw_bit);
+}
+
+u64 count_set_bits_in_voxelmap() {
+    u64 tot = 0;
+    for(int i = 0; i < 1024*1024; i++) {
+        for(int j = 0; j < 4; j++) {
+            tot += __builtin_popcountll(columns_bitmaps_data[i].bits[j]);
+        }
+    }
+    return tot;
+}
+
+
+
+void col_to_surf_bitmap(u32 voxelmap_idx, column_bitmaps* bmp) {
+    column_header header = columns_header_data[voxelmap_idx];
+    span* runs = columns_runs_data[voxelmap_idx].runs_info;
+    memset(bmp->bits, 0, sizeof(bmp->bits));
+    for(int i = 0; i < header.num_runs; i++) {
+        for(int z = runs[i].top_surface_start; z < runs[i].top_surface_end+1; z++) {
+            int qw_idx = z >> 6;
+            int qw_bit = (z & 0b111111);
+            bmp->bits[qw_idx] |= ((u64)((u64)1) << qw_bit);
+        }
+        for(int z = runs[i].bot_surface_start; z < runs[i].bot_surface_end; z++) {
+            int qw_idx = z >> 6;
+            int qw_bit = (z & 0b111111);
+            bmp->bits[qw_idx] |= ((u64)((u64)1) << qw_bit);
+        }
+    }
+}
+
+void col_to_solid_bitmap(u32 voxelmap_idx, column_bitmaps* bmp) {
+    column_header header = columns_header_data[voxelmap_idx];
+    span* runs = columns_runs_data[voxelmap_idx].runs_info;
+    memset(bmp->bits, 0, sizeof(bmp->bits));
+    for(int i = 0; i < header.num_runs; i++) {
+        for(int z = runs[i].top_surface_start; z < runs[i].bot_surface_end; z++) {
+            int qw_idx = z >> 6;
+            int qw_bit = (z & 0b111111);
+            bmp->bits[qw_idx] |= ((u64)((u64)1) << qw_bit);
+        }
+    }
+}
+
+
+
 
 __m256i get_voxelmap_idx_256(__m256i xs, __m256i ys) {
     __m256i ten_twenty_three_vec = _mm256_set1_epi32(1023);
@@ -152,8 +199,8 @@ __m256i get_voxelmap_idx_256(__m256i xs, __m256i ys) {
 
 
     // 256x256 chunks
-    //__m256i wrapped_tile_xs = wrapped_xs & 255; // 255 // 511
-    //__m256i wrapped_tile_ys = wrapped_ys & 255; // 255 // 511
+    //__m256i wrapped_tile_xs = wrapped_xs & 255;
+    //__m256i wrapped_tile_ys = wrapped_ys & 255;
     __m256i wrapped_tile_xs = _mm256_and_si256(wrapped_xs, two_fifty_five_vec);
     __m256i wrapped_tile_ys = _mm256_and_si256(wrapped_ys, two_fifty_five_vec);
     //y &= 1023;
@@ -364,7 +411,7 @@ int check_for_solid_voxel_in_aabb(s32 x, s32 y, s32 z, s32 xsize, s32 ysize, s32
 
 int find_first_solid_span_gte_z(s32 x, s32 y, s32 z) {    
     int res = -1;
-    if(x < 0 || x > 511 || y < 0 || y > 511 || z < 0 || z >= (cur_map_max_height+1)) {
+    if(x < 0 || x >= MAP_X_SIZE || y < 0 || y >= MAP_Y_SIZE || z < 0 || z >= (cur_map_max_height+1)) {
         return 1;
     }
     iter_res span_check_func(int top, int exclusive_bot, int span_idx) {
@@ -378,7 +425,7 @@ int find_first_solid_span_gte_z(s32 x, s32 y, s32 z) {
 }
 
 int voxel_is_surface(s32 map_x, s32 map_y, s32 map_z) {
-    if(map_x < 0 || map_x > 511 || map_y < 0 || map_y > 511 || map_z < 0 || map_z >= (cur_map_max_height+1)) {
+    if(map_x < 0 || map_x >= MAP_X_SIZE || map_y < 0 || map_y > MAP_Y_SIZE || map_z < 0 || map_z >= (cur_map_max_height+1)) {
         return 0;
     }
     // TODO: maybe binary search
@@ -393,13 +440,13 @@ int voxel_is_surface(s32 map_x, s32 map_y, s32 map_z) {
     return res;
 }
 
-void set_voxel_to_surface(s32 x, s32 y, s32 z, u32 color) {
-    printf("unsupported!\n");
-    assert(0);
+void set_voxel_to_surface(s32 x, s32 y, s32 z) {
+    //printf("TODO: add support for exposing voxels as surfaces\n");
+    //assert(0);
 
 #if 0
     // only applies if there is a voxel here :)
-    if(x < 0 || x > 512 || y < 0 || y > 512 || z < 0 || z > 64) {
+    if(x < 0 || x >= MAP_X_SIZE || y < 0 || y >= MAP_Y_SIZE || z < 0 || z > 64) {
         return;
     }
     u32 voxelmap_idx = get_voxelmap_idx(x, y);
@@ -569,27 +616,168 @@ void add_sphere(s32 sx, s32 sy, s32 sz, s32 radius) {
 }
 #endif
 
-#if 0
+u32 count_colors_in_span(span sp) {
+    u32 num_colors = ((sp.top_surface_end+1)-sp.top_surface_start) + (sp.bot_surface_end - sp.bot_surface_start);
+    if(sp.bot_surface_end > sp.bot_surface_start) {
+        num_colors += (sp.bot_surface_end + sp.bot_surface_start);
+    }
+    return num_colors;
+}
+
 void remove_voxel_at(s32 map_x, s32 map_y, s32 map_z) {
     // we either 
     //
-    // case 0: top voxel of a top surface
-    // case 1: bottom voxel of the bottom surface
+    if(map_x < 0 || map_x >= MAP_X_SIZE || map_y < 0 || map_y >= MAP_Y_SIZE) {
+        return;
+    }
+    if(map_z >= cur_map_max_height-1) {
+        return;
+    }
     u32 idx = get_voxelmap_idx(map_x, map_y);
-    for(int i = 0; i < columns_header_data[idx].num_runs; i++) {
-        u8 top_of_top_span_pos = columns_runs_data[idx].runs_info->top;
-        u8 bot_of_top_span_pos = columns_runs_data[idx].runs_info->bot;
-        u8 bot_of_bot_span_pos = columns_runs_data[idx].runs_info->bottom_voxels_end;
-        u8 top_of_bot_span_pos = columns_runs_data[idx].runs_info->bottom_voxels_start;
-        if(map_z == top_of_top_span_pos && top_of_top_span_pos < bot_of_top_span_pos) {
-            columns_runs_data[idx].runs_info->top++;
+    
+    // tracks color slot
+    u32 cumulative_skipped_surface_voxels = 0;
+    u32* color_ptr = columns_colors_data[idx].colors;
+
+    u8 num_runs = columns_header_data[idx].num_runs;
+
+    for(int i = 0; i < num_runs; i++) {
+        u8 top_of_top_surf = columns_runs_data[idx].runs_info[i].top_surface_start;
+        u8 bot_of_top_surf = columns_runs_data[idx].runs_info[i].top_surface_end;
+        u8 top_of_bot_surf = columns_runs_data[idx].runs_info[i].bot_surface_start;
+        u8 bot_of_bot_surf_exclusive = columns_runs_data[idx].runs_info[i].bot_surface_end;
+        if(map_z == top_of_top_surf && top_of_top_surf < bot_of_top_surf) {
+            // case 0: top voxel of a top surface
+            columns_runs_data[idx].runs_info[i].top_surface_start++;
+            if(i == 0) {
+                columns_header_data[idx].top_y++;
+            }
+            set_voxel_to_surface(map_x-1, map_y, map_z);
+            set_voxel_to_surface(map_x+1, map_y, map_z);
+            set_voxel_to_surface(map_x, map_y-1, map_z);
+            set_voxel_to_surface(map_x, map_y+1, map_z);
+
+
+            // move colors up for this column
+            u32 colors_to_move = 0;
+            for(int j = i; j < num_runs; j++) {
+                colors_to_move += count_colors_in_span(columns_runs_data[idx].runs_info[i]);
+            }
+            memmove(color_ptr, color_ptr+1, sizeof(u32)*colors_to_move);
+
             return;
         }
 
-        if(map_z == bot_of_bot_span_pos-1 && bot_of_bot_span_pos != bot_of_top_span_pos) {
-            columns_runs_data[idx].runs_info->bottom_voxels_end--;
+        if(map_z == top_of_top_surf && top_of_top_surf == bot_of_top_surf) {
+            // case 1: inside top surf, which has a length of 1
+            if(top_of_bot_surf > bot_of_top_surf && bot_of_bot_surf_exclusive > top_of_bot_surf) {
+
+                // there are solid, non-surface voxels to handle..
+                // let's just give it the same color
+                
+                columns_runs_data[idx].runs_info[i].top_surface_start++;
+                columns_runs_data[idx].runs_info[i].top_surface_end++;
+                
+                set_voxel_to_surface(map_x-1, map_y, map_z);
+                set_voxel_to_surface(map_x+1, map_y, map_z);
+                set_voxel_to_surface(map_x, map_y-1, map_z);
+                set_voxel_to_surface(map_x, map_y+1, map_z);
+                return;
+            } else {
+                // there are no solid voxels below 
+                // in fact there is no bottom surface either
+                // just remove this span, copy colors 1 up, and copy spans up as well
+                u32 colors_to_move = 0;
+                for(int j = i+1; j < num_runs; j++) {
+                    colors_to_move += count_colors_in_span(columns_runs_data[idx].runs_info[j]);
+                    columns_runs_data[idx].runs_info[j-1] = columns_runs_data[idx].runs_info[j];
+                }
+                memmove(color_ptr, color_ptr+1, sizeof(u32)*colors_to_move);
+                columns_header_data[idx].num_runs--;
+                //if(i == 0) {
+                    // the top y is now the top y of the next run
+                    // just always update, in case to avoid a branch 
+                    columns_header_data[idx].top_y = columns_runs_data[idx].runs_info[0].top_surface_start;
+                //}
+                
+                set_voxel_to_surface(map_x-1, map_y, map_z);
+                set_voxel_to_surface(map_x+1, map_y, map_z);
+                set_voxel_to_surface(map_x, map_y-1, map_z);
+                set_voxel_to_surface(map_x, map_y+1, map_z);
+                return;
+            }
+        }
+
+        
+        if(map_z > top_of_top_surf && map_z < bot_of_top_surf) {
+            // case 3: middle of top surface
+
+            // patch surface
+            // copy spans down
+            for(int j = num_runs; j > i; j--) {
+                columns_runs_data[idx].runs_info[j] = columns_runs_data[idx].runs_info[j-1];
+            }
+            num_runs++;
+            columns_header_data[idx].num_runs = num_runs;
+            // now the current run and next run are identical
+            // modify them
+            columns_runs_data[idx].runs_info[i].top_surface_end = map_z-1;
+            columns_runs_data[idx].runs_info[i].bot_surface_start = map_z;
+            columns_runs_data[idx].runs_info[i].bot_surface_end = map_z-1;
+
+            columns_runs_data[idx].runs_info[i+1].top_surface_start = map_z+1;
+
+            // move colors up for this column
+            u32 colors_to_move = 0;
+            for(int j = i+1; j < num_runs; j++) {
+                colors_to_move += count_colors_in_span(columns_runs_data[idx].runs_info[j]);
+            }
+            
+            // skip past new top
+            color_ptr += (columns_runs_data[idx].runs_info[i].top_surface_end+1)-columns_runs_data[idx].runs_info[i].top_surface_start;
+
+            memmove(color_ptr, color_ptr+1, sizeof(u32)*colors_to_move);
+
+            set_voxel_to_surface(map_x-1, map_y, map_z);
+            set_voxel_to_surface(map_x+1, map_y, map_z);
+            set_voxel_to_surface(map_x, map_y-1, map_z);
+            set_voxel_to_surface(map_x, map_y+1, map_z);
+
             return;
         }
+        
+        if(map_z == bot_of_top_surf) {
+            // case 3: bottom of top surface
+            return;
+        }
+
+        cumulative_skipped_surface_voxels += ((bot_of_top_surf+1) - top_of_top_surf);
+        color_ptr += ((bot_of_top_surf+1) - top_of_top_surf);
+
+        if(map_z == bot_of_bot_surf_exclusive-1 && bot_of_bot_surf_exclusive != bot_of_top_surf) {
+            // case 1: bottom voxel of the bottom surface
+            columns_runs_data[idx].runs_info[i].bot_surface_end--;
+            // we need to delete this color
+            // this is the bug for sure
+            u32 colors_to_move = 0;
+            for(int j = i+1; j < num_runs; j++) {
+                colors_to_move += count_colors_in_span(columns_runs_data[idx].runs_info[j]);
+            }
+            memmove(color_ptr, color_ptr+1, sizeof(u32)*colors_to_move);
+
+            set_voxel_to_surface(map_x-1, map_y, map_z);
+            set_voxel_to_surface(map_x+1, map_y, map_z);
+            set_voxel_to_surface(map_x, map_y-1, map_z);
+            set_voxel_to_surface(map_x, map_y+1, map_z);
+            return;
+        }
+
+        if(map_z > bot_of_top_surf && map_z < top_of_bot_surf) {
+            // split in middle of non-surface
+
+        }
+        cumulative_skipped_surface_voxels += (bot_of_bot_surf_exclusive - top_of_bot_surf);
+        color_ptr += (bot_of_bot_surf_exclusive - top_of_bot_surf);
     }
 
     // case 2: middle voxel of top surface
@@ -606,7 +794,6 @@ void remove_voxel_at(s32 map_x, s32 map_y, s32 map_z) {
 
     // fiarst run is top
 }
-#endif
 
 u32 convert_voxlap_color_to_transparent_abgr(u32 argb) {
     u8 a = 0b11111101;//(argb>>26)<<2;// | 0b11);
@@ -639,7 +826,7 @@ char* map_load_error_strings[3] = {
 
 int load_error_value;
 
-int load_voxlap_map(char* file, int expected_height) {
+int load_voxlap_map(char* file, int expected_height, int double_height) {
     FILE* f = fopen(file, "rb");
     if(f == NULL) {
         return -1;
@@ -648,7 +835,7 @@ int load_voxlap_map(char* file, int expected_height) {
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);  /* same as rewind(f); */
 
-    char *bytes = malloc(len);
+    char *bytes = malloc_wrapper(len, "buffer for map");
     fread(bytes, len, 1, f);
     fclose(f);
 
@@ -657,18 +844,19 @@ int load_voxlap_map(char* file, int expected_height) {
     printf("Loading map...\n");
 
     u8 *v = (u8*)bytes;
-    for (y=0; y < 512; y++) {
+    for (y=0; y <= 511; y++) {
         int yy = y*2;
         for (x=511; x >= 0; x--) { 
             int xx = x*2;
             z = 0;
             u32 idx = get_voxelmap_idx(x, y);
+
             column_header *header = &columns_header_data[idx];
 
             span *runs = &columns_runs_data[idx].runs_info[0];
             u32 *output_color_ptr = &columns_colors_data[idx].colors[0];
-            
             int num_runs = 0;     
+            int double_factor = double_height ? 2 : 1;
             // parse this column
             for(;;) {
                 u32 *color;
@@ -676,18 +864,22 @@ int load_voxlap_map(char* file, int expected_height) {
                 int number_4byte_chunks = v[0];
                 int top_color_start = v[1];
                 int top_color_end   = v[2]; // inclusive
+                int top_color_end_exclusive = top_color_end+1;
                 //assert(top_color_end >= top_color_start);
                 if(top_color_start > expected_height) { load_error_value = top_color_start; return INVALID_MAX_EXPECTED_HEIGHT; }
                 if(top_color_end > expected_height) { load_error_value = top_color_end; return INVALID_MAX_EXPECTED_HEIGHT; }
                 int bottom_color_start;
-                int bottom_color_end; // exclusive
+                int bottom_color_end_exclusive; // exclusive
                 int len_top;
                 int len_bottom;
                 
                 
                 color = (u32 *) (v+4);
                 int actual_top_color_end = (top_color_end < top_color_start ? top_color_start : top_color_end);
-                for(z=top_color_start; z <= top_color_end; z++) {
+                for(z=top_color_start; z < top_color_end_exclusive; z++) {
+                    if(double_height) {
+                        *output_color_ptr++ = convert_voxlap_color_to_abgr(*color);
+                    }
                     *output_color_ptr++ = convert_voxlap_color_to_abgr(*color++);
                 }
                 
@@ -697,13 +889,16 @@ int load_voxlap_map(char* file, int expected_height) {
                 if (number_4byte_chunks == 0) {
                     // infer ACTUAL number of 4-byte chunks from the length of the color data
                     v += 4 * (len_top + 1);
-                    runs[num_runs].top_surface_start = top_color_start; 
-                    runs[num_runs].top_surface_end = expected_height; // top_color_end // NOTE: this here is important!
-                    runs[num_runs].bot_surface_start = expected_height+1;
-                    runs[num_runs++].bot_surface_end = expected_height+1;
+                    runs[num_runs].top_surface_start = top_color_start*double_factor; 
+                    runs[num_runs].top_surface_end = expected_height*double_factor; // top_color_end // NOTE: this here is important!
+                    runs[num_runs].bot_surface_start = expected_height*double_factor+1;
+                    runs[num_runs++].bot_surface_end = expected_height*double_factor+1;
                     // fill empty colors
                     u32 prev_color = *(output_color_ptr-1);
                     while(z <= expected_height) {
+                        if(double_height) {
+                            *output_color_ptr++ = prev_color;
+                        }
                         *output_color_ptr++ = prev_color;
                         z++;
                     }
@@ -716,18 +911,21 @@ int load_voxlap_map(char* file, int expected_height) {
                 // now skip the v pointer past the data to the beginning of the next span
                 v += v[0]*4;
 
-                bottom_color_end   = v[3]; // aka air start
-                if(bottom_color_end > expected_height) { load_error_value = bottom_color_end; return INVALID_MAX_EXPECTED_HEIGHT; }
-                bottom_color_start = bottom_color_end - len_bottom;
+                bottom_color_end_exclusive   = v[3]; // aka air start
+                if(bottom_color_end_exclusive > expected_height) { load_error_value = bottom_color_end_exclusive; return INVALID_MAX_EXPECTED_HEIGHT; }
+                bottom_color_start = bottom_color_end_exclusive - len_bottom;
 
-                for(z=bottom_color_start; z < bottom_color_end; ++z) {
+                for(z=bottom_color_start; z < bottom_color_end_exclusive; ++z) {
+                    if(double_height) {
+                        *output_color_ptr++ = convert_voxlap_color_to_abgr(*color);
+                    }
                     *output_color_ptr++ = convert_voxlap_color_to_abgr(*color++);
                 }
 
-                runs[num_runs].top_surface_start = top_color_start;
-                runs[num_runs].top_surface_end = top_color_end; //top_color_end; // NOTE: this here is important!
-                runs[num_runs].bot_surface_start = bottom_color_start;
-                runs[num_runs++].bot_surface_end = bottom_color_end;
+                runs[num_runs].top_surface_start = top_color_start*double_factor;
+                runs[num_runs].top_surface_end = (top_color_end_exclusive*double_factor)-1; //top_color_end; // NOTE: this here is important!
+                runs[num_runs].bot_surface_start = bottom_color_start*double_factor;
+                runs[num_runs++].bot_surface_end = bottom_color_end_exclusive*double_factor;
 
             }
             assert(num_runs != 0);
@@ -741,329 +939,243 @@ int load_voxlap_map(char* file, int expected_height) {
         }
     }
     if(v-base != len) {
-        return BAD_DIMENSIONS;
+        goto bad_dimensions;
     }
 
+    free(bytes);
     return 0;
+bad_dimensions:
+    free(bytes);
+    return BAD_DIMENSIONS;
+    
 
 }
 
-u64 column_to_bitmap(int num_runs, span* spans) {
-    assert(0);
-#if 0 
-    u64 bmp = 0;
-    for(int i = 0; i < num_runs; i++) {
-        bmp |= ((1ull << (spans[i].bot)) - (1ull << spans[i].top));
-        bmp |= (1ull << 63);
-        //if(spans[i].bot == 64) { bmp |= (1ull<<63); }
-        //for(int j = spans[i].top; j < spans[i].bot; j++) {
-        //    bmp |= ((u64)1 << j);
-        //}
-    }
-    return bmp;
-#endif
-}
 
-#define AMBIENT_OCCLUSION_RADIUS 4
+#define AMBIENT_OCCLUSION_RADIUS 3
 #define NORMAL_RADIUS 2
 
 #define AMBIENT_OCCLUSION_DIAMETER (AMBIENT_OCCLUSION_RADIUS*2+1)
 
-u64 surface_bitmap_array[1024*1024];
-u64 solid_bitmap_array[1024*1024];
 
-typedef struct {
-    u64 bits[4];
-} bitmap_col;
+/*!
+ * \brief A parallel full-adder.
+ * \param s0 Bit 0 of the sum
+ * \param s1 Bit 1 of the sum
+ * \param a0 First argument
+ * \param a1 Second argument
+ */
+#define ADD2(s0,s1,a0,a1) do {		\
+	    s1 = (a0) & (a1);		\
+	    s0 = (a0) ^ (a1);		\
+	} while(0)
 
-void col_to_surf_bitmap(u32 voxelmap_idx, bitmap_col* bmp) {
-    column_header header = columns_header_data[voxelmap_idx];
-    span* runs = columns_runs_data[voxelmap_idx].runs_info;
-    memset(bmp->bits, 0, sizeof(bmp->bits));
-    for(int i = 0; i < header.num_runs; i++) {
-        for(int z = runs[i].top_surface_start; z < runs[i].top_surface_end+1; z++) {
-            int qw_idx = z >> 6;
-            int qw_bit = (z & 0b111111);
-            bmp->bits[qw_idx] |= (qw_bit);
-        }
-        for(int z = runs[i].bot_surface_start; z < runs[i].bot_surface_end; z++) {
-            int qw_idx = z >> 6;
-            int qw_bit = (z & 0b111111);
-            bmp->bits[qw_idx] |= (qw_bit);
-        }
-    }
-}
+/*!
+ * \brief A parallel full-adder.
+ * \param s0 Bit 0 of the sum
+ * \param s1 Bit 1 of the sum
+ * \param a0 First argument
+ * \param a1 Second argument
+ * \param a2 Third argument
+ */
+#define ADD3(s0,s1,a0,a1,a2) do {	\
+	    u64 c0, c1;		\
+        u64 tmp;        \
+	    ADD2(tmp,c0,a0,a1);		\
+	    ADD2(s0,c1,tmp,a2);		\
+	    s1 = c0 | c1;		\
+	} while(0)
 
-void col_to_solid_bitmap(u32 voxelmap_idx, bitmap_col* bmp) {
-    column_header header = columns_header_data[voxelmap_idx];
-    span* runs = columns_runs_data[voxelmap_idx].runs_info;
-    memset(bmp->bits, 0, sizeof(bmp->bits));
-    for(int i = 0; i < header.num_runs; i++) {
-        for(int z = runs[i].top_surface_start; z < runs[i].bot_surface_end; z++) {
-            int qw_idx = z >> 6;
-            int qw_bit = (z & 0b111111);
-            bmp->bits[qw_idx] |= (qw_bit);
-        }
-    }
-}
-
-
-bitmap_col map_bitmaps[512*512];
-
-void light_map_bitmap() {
-    
-    // build columns for entire map first
+/*
+    Add together 2 2-bit numbers, 3 bits but only up to 6 
+*/
+#define ADD2_2(s0,s1,s2, a00,a01, a10,a11) do {     \
+        u64 carry;                                  \
+        ADD2(s0, carry, a00, a10);                  \
+        ADD3(s1, s2, a01, a11, carry);              \
+} while(0);
 
 
-    for(int y = 0; y < 512; y++) {
-        for(int x = 0; x < 512; x++) {
-            col_to_solid_bitmap(get_voxelmap_idx(x, y), &map_bitmaps[y*512+x]);
-        }
-    }
-
-
-    for(int y = 0; y < 512; y++) {
-        int uy = y == 0 ? 511 : y-1;
-        int dy = y == 511 ? 0 : y+1;
-        for(int x = 0; x < 512; x++) {
-            int lx = x == 0 ? 511 : x-1;
-            int rx = x == 511 ? 0 : x+1;
-
-            bitmap_col center_col;
-            col_to_surf_bitmap(get_voxelmap_idx(x,y), &center_col);
-
-            for(int center_qw_idx = 0; center_qw_idx < 4; center_qw_idx++) {
-                u64 qw = center_col.bits[center_qw_idx];
-                int offset = center_qw_idx*64;
-                while(qw) {
-                    int set_bit = __builtin_ffsll(qw)-1;
-                    int z = set_bit+offset;
-                    
-                    int solid_cells = 0;
-                    int samples = 0;
-
-
-                        
-                    f32 norm_x = 0.0;
-                    f32 norm_y = 0.0;
-                    f32 norm_z = 0.0;
-
-                    // check neighborhood
-                    for(int yy = -AMBIENT_OCCLUSION_RADIUS; yy <= AMBIENT_OCCLUSION_RADIUS; yy++) {
-                        int ty = y+yy;
-                        if(ty < 0 || ty > 511) { continue; }
-                        for(int xx = -AMBIENT_OCCLUSION_RADIUS; xx <= AMBIENT_OCCLUSION_RADIUS; xx++) {
-                            int tx = x+xx;
-                            if(tx < 0 || tx > 511) { continue; }
-
-                            for(int zz = -AMBIENT_OCCLUSION_RADIUS;  zz <= AMBIENT_OCCLUSION_RADIUS; zz++) { 
-
-                                int tz = z+zz;
-
-                                u8 valid_ao_sample = (tx != x && ty != y && tz != z) && (tz <= z);
-
-                                samples += (valid_ao_sample ? 1 : 0);
-                                u8 out_of_bounds = (tx < 0 || tx >= 512 || ty < 0 || ty >= 512 || tz < 0 || tz >= (cur_map_max_height+1));
-
-                                int bitmap_column_idx = ty*512+tx;
-                                bitmap_col test_bitmap_col = map_bitmaps[bitmap_column_idx];
-                                int test_z_qw_idx = tz / 64;
-                                int test_z_bit_idx = tz & 0b111111;
-
-                                u8 cell_is_solid = test_bitmap_col.bits[test_z_qw_idx] & (1<<test_z_bit_idx);//voxel_is_solid(tx,ty,tz); 
-                                solid_cells += ((valid_ao_sample && cell_is_solid) ? 1 : 0);
-
-                                
-                                norm_x += cell_is_solid ? -xx : 0.0;
-                                norm_y += cell_is_solid ? -yy : 0.0;
-                                norm_z += cell_is_solid ? -zz : 0.0;
-                                
-                            }
-                        }
-                    }
-                    if(norm_x == 0 && norm_y == 0 && norm_z == 0) {
-                        norm_z = -1;
-                    }
-
-                    
-                    // 0 -> no filled surrounding voxels, 1 -> all filled surrounding voxels
-                    // but divide in 2 to reduce the effect, so the effect is more subtle
-                    f32 zero_to_one; 
-                    if(samples == 0) {
-                        zero_to_one = 0;
-                    } else {
-                        zero_to_one = ((solid_cells*.75f)/(f32)samples);
-                    }
-
-                    f32 one_to_zero = 1-zero_to_one; // 0-> all filled surrounding voxels, 0.5-> no filled surrounding voxels
-
-                    // each albedo has 6 AO bits, so use up all 6 of them
-                    f32 one_to_zero_scaled = 63.0 * one_to_zero; // scale from 0->.5 to 0-63
-
-
-                    f32 len = magnitude_vector(norm_x, norm_y, norm_z);
-                    f32 fnorm_x = norm_x / len;
-                    f32 fnorm_y = norm_y / len;
-                    f32 fnorm_z = norm_z / len;
-                    float2 norm = encode_norm(fnorm_x, fnorm_y, fnorm_z);
-                    voxel_set_normal(x, y, z, norm.x, norm.y);
-
-                    //f32 i = ((((fnorm_y * .5) + fnorm_z) * 64.0 + 103.5)/256.0);
-
-
-                    u8 one_to_zero_ao_bits = ((u8)floorf(one_to_zero_scaled));
-                    u32 base_color = voxel_get_color(x, y, z);
-                    u8 alpha_bits = (base_color>>24)&0b11;
-                    //u8 ao_and_alpha_byte = (one_to_zero_ao_bits<<2) | alpha_bits;
-                    long r, g, b;
-
-                    r = min(((base_color & 0xFF)),255);
-                    g = min((((base_color >> 8) & 0xFF)),255);
-                    b = min((((base_color >> 16) & 0xFF)),255);
-
-                    u8 ao_and_alpha_byte = (one_to_zero_ao_bits<<2) | alpha_bits;
-                    voxel_set_color(x, y, z, ((ao_and_alpha_byte<<24)|(b<<16)|(g<<8)|r));
-
-
-                    // clear bit to prevent infinite loop :)
-                    qw ^= (1 << set_bit);
-                }
-            }
-
-        }
-    }
-    
-}
+#define ADD3_3(s0,s1,s2,s3, a00,a01,a02, a10,a11,a12) do {     \
+        u64 carry;                                  \
+        ADD2(s0, carry, a00, a10);                  \
+        ADD3(s1, carry, a01, a11, carry);           \
+        ADD3(s2, s3, a02, a12, carry);              \
+} while(0);
 
 //#define NORMAL_RADIUS 6
 void light_map(int min_x, int min_y, int max_x, int max_y) {
     for(int y = min_y; y < max_y; y++) {
-        for(int x = min_x; x <= max_x; x++) {
+        for(int x = min_x; x < max_x; x++) {
             u32 voxelmap_idx = get_voxelmap_idx(x, y);
             column_header* header = &columns_header_data[voxelmap_idx];
             span* runs = columns_runs_data[voxelmap_idx].runs_info;
-           
-        #if 1
+
             for(int i = 0; i < header->num_runs; i++) {
-                
-                int z_ranges[2][2] = {{runs[i].top_surface_start, runs[i].top_surface_end+1}, 
-                                   {runs[i].bot_surface_start, runs[i].bot_surface_end}};
+
+
+                int z_ranges[4] = {runs[i].top_surface_start, runs[i].top_surface_end+1, 
+                                   runs[i].bot_surface_start, runs[i].bot_surface_end};
                 for(int range_idx = 0; range_idx < 2; range_idx++) {
-                    int min_z = z_ranges[range_idx][0];
-                    int max_z_exclusive = z_ranges[range_idx][1];
+                    int min_z = z_ranges[range_idx*2];
+                    int max_z_exclusive = z_ranges[range_idx*2+1];
 
                     for(int z = min_z; z < max_z_exclusive; z++) {
-                        //if(x == 126 && y == 134 && z == 231) {
-                        //    printf("break!\n");
-                        //}
-                        //if(z >= (runs[i].top_surface_end+1) && z < runs[i].bot_surface_start) {
-                        //    continue;
-                        //}
-
-
-                        //if(!voxel_is_solid(x, y, z)) {
-                        //    continue;
-                        //}
-                        //if(!voxel_is_surface(x, y, z)) {
-                        //    continue;
-                        //}
 
                         int solid_cells = 0;
                         int samples = 0;
 
-
-                            
                         f32 norm_x = 0.0;
                         f32 norm_y = 0.0;
                         f32 norm_z = 0.0;
+                        /*
+                        // 25 columns
+                        column_bitmaps bmps[25];
+                        // -2,-1,0,1,2
+                        for(int cy = 0; cy <= AMBIENT_OCCLUSION_DIAMETER; cy++) {
+                            int yy = cy - AMBIENT_OCCLUSION_RADIUS;
+                            for(int cx = 0; cx <= AMBIENT_OCCLUSION_DIAMETER; x++) {
+                                int xx = cx - AMBIENT_OCCLUSION_RADIUS;
+                                
+                                bmps[cy*AMBIENT_OCCLUSION_DIAMETER+cx] = columns_bitmaps_data[get_voxelmap_idx(y+xx, y+yy)];
+                            }
+                        }
+                        */
+                        
+                        // sum bitmaps for position?
+                        /*
+                        for(int z = 0; z < cur_map_max_height; z++) {
+                            // 
+                            u64 bit01, bit02; // 3
+                            u64 bit11, bit12; // 3
+                            u64 bit21, bit22; // 3
+                            u64 bit31, bit32; // 3
+                            u64 bit41, bit42; // 3
+                            u64 bit51, bit52; // 3
+                            u64 bit61, bit62; // 3
+                            u64 bit71, bit72; // 3
+                            u64 bit81, bit82; // up to 1
 
 
+                            u64 carry;
+                            ADD3(bit01, bit02, bmps[0].bits[z], bmps[1].bits[z], bmps[2].bits[z]); // up to 3
+                            ADD3(bit11, bit12, bmps[3].bits[z], bmps[4].bits[z], bmps[5].bits[z]); // up to 3
+                            ADD3(bit21, bit22, bmps[6].bits[z], bmps[7].bits[z], bmps[8].bits[z]); // up to 3
+                            ADD3(bit31, bit32, bmps[9].bits[z], bmps[10].bits[z], bmps[11].bits[z]); // up to 3
+                            ADD3(bit41, bit42, bmps[12].bits[z], bmps[13].bits[z], bmps[14].bits[z]); // up to 3
+                            ADD3(bit51, bit52, bmps[15].bits[z], bmps[16].bits[z], bmps[17].bits[z]); // up to 3
+                            ADD3(bit61, bit62, bmps[18].bits[z], bmps[19].bits[z], bmps[20].bits[z]); // up to 3
+                            ADD3(bit71, bit72, bmps[21].bits[z], bmps[22].bits[z], bmps[23].bits[z]); // up to 3
+                            bit81 = bmps[24].bits[z];
+                            bit82 = 0;
 
-                    #if 1
+
+                            // add the low bits
+                            // add the high bits with carry
+                            u64 carry;
+                            u64 sbit01, sbit02, sbit03; // up to 6
+                            u64 sbit11, sbit12, sbit13; // up to 6
+                            u64 sbit21, sbit22, sbit23; // up to 6
+                            u64 sbit31, sbit32, sbit33; // up to 6
+                            u64 sbit41, sbit42, sbit43; // up to 1
+                            ADD2_2(sbit01, sbit02, sbit03,  bit01, bit02,  bit11, bit12);
+                            ADD2_2(sbit11, sbit12, sbit13,  bit21, bit22,  bit31, bit32);
+                            ADD2_2(sbit21, sbit22, sbit23,  bit41, bit42,  bit51, bit52);
+                            ADD2_2(sbit31, sbit32, sbit33,  bit61, bit62,  bit71, bit72);
+                            sbit41 = bit81;
+
+                            u64 s2bit01, s2bit02, s2bit03, s2bit04; // up to 12
+                            u64 s2bit11, s2bit12, s2bit13, s2bit14; // up to 12
+                            u64 s2bit21; // 1
+
+                            ADD3_3(s2bit01, s2bit02, s2bit03, s2bit04,  sbit01, sbit02, sbit03,  sbit11, sbit12, sbit13);
+                            ADD3_3(s2bit11, s2bit12, s2bit13, s2bit14,  sbit11, sbit12, sbit13,  sbit21, sbit22, sbit23);
+                            s2bit21 = sbit41;
+
+                            u64 s3bit01, s3bit02, s3bit03, s3bit04, s3bit05; // up to 24
+                            u64 s3bit11; // 1
+                            ADD4_4(s3bit01, s3bit02, s3bit03, s3bit04,s3bit05,  s2bit01, s2bit02, s2bit03, s2bit04, s2bit11, s2bit12, s2bit13, s2bit14);
+                            s3bit11 = s2bit21;
+
+                            // add and carry
+                            u64 carry;
+                            u64 outbit1, outbit2, outbit3, outbit4, outbit5, outbit6; // technically can only go up to 25, so i think the last bit will always be zero
+                            ADD2(outbit1, carry, s3bit01, s3bit11);
+                            ADD2(outbit2, carry, s3bit02, carry);
+                            ADD2(outbit3, carry, s3bit03, carry);
+                            ADD2(outbit4, carry, s3bit04, carry);
+                            ADD2(outbit5, outbit6, s3bit05, carry);
+                            // 6 output bits, with a count of up to 25
+
+                            // needs to be able to go up to 125
 
 
-                        // NOTE: THIS IS BEING REUSED IN THE FUNCTION POINTER VERSION ABOVE!
-                        // faster incremental version, ~9.5 seconds for a radius of 4
+                        }
+
+                        */
                         for(int yy = -AMBIENT_OCCLUSION_RADIUS; yy <= AMBIENT_OCCLUSION_RADIUS; yy++) {
                             int ty = y+yy;
-                            if(ty < 0 || ty > 511) { continue; }
+                            if(ty < 0 || ty >= MAP_Y_SIZE) { continue; }
                             for(int xx = -AMBIENT_OCCLUSION_RADIUS; xx <= AMBIENT_OCCLUSION_RADIUS; xx++) {
                                 int tx = x+xx;
-                                if(tx < 0 || tx > 511) { continue; }
+                                if(tx < 0 || tx > MAP_X_SIZE) { continue; }
 
                                 // don't search below this voxel
                                 //int cur_span_idx = find_first_solid_span_gte_z(x, y, z-AMBIENT_OCCLUSION_RADIUS);
                                 u32 test_voxelmap_idx = get_voxelmap_idx(tx, ty);
-                                span* cur_spans = columns_runs_data[test_voxelmap_idx].runs_info;
+
+                                //span* cur_spans = columns_runs_data[test_voxelmap_idx].runs_info;
                                 int test_span_num_runs = columns_header_data[test_voxelmap_idx].num_runs;
+                                int test_span_top_y = columns_header_data[test_voxelmap_idx].top_y;
+                                if(test_span_num_runs == 0) { continue; }
 
-                                int cur_span_idx = 0;
-
-                                // find first span that ends on the current test z ?
-                                int start_z = (z-AMBIENT_OCCLUSION_RADIUS) < 0 ? 0 : (z-AMBIENT_OCCLUSION_RADIUS);
-                                //for(cur_span_idx = 0; cur_span_idx < test_span_num_runs; cur_span_idx++) {
-                                    //int tz = z-AMBIENT_OCCLUSION_RADIUS;
-                                //    if(cur_spans[cur_span_idx].bot_surface_end > start_z) { break; }
-                                    //if(start_z >= cur_spans[cur_span_idx].top_surface_start && start_z < cur_spans[cur_span_idx].bot_surface_end) { break; }
-                                    //if(cur_spans[cur_span_idx].bot_surface_end > z-AMBIENT_OCCLUSION_RADIUS) { break; }
-                                //}
-
-                                for(int zz = -AMBIENT_OCCLUSION_RADIUS; cur_span_idx < test_span_num_runs && zz <= AMBIENT_OCCLUSION_RADIUS; zz++) { //AMBIENT_OCCLUSION_RADIUS; zz++) {
-
-                                    int tz = z+zz;
-                                    if(tz < 0 || tz >= (cur_map_max_height+1)) { continue; }
-
-                                    u8 valid_ao_sample = (tx != x && ty != y && tz != z) && (tz <= z);
                                     
-                                    //if(x == 126 && y == 134 && z == 231) {
-                                    //    printf("%i,%i,%i valid sample?: %i\n", tx, ty, tz, valid_ao_sample);
-                                    //}
+                                // z is 0
+                                // and amb radius is 3
+                                // would go from -3 to 0
+                                // but instead it would only evaluate 0
+
+                                // if z is 12
+                                // and amb radius is 3
+                                
+                                for(int zz = max(0, z-AMBIENT_OCCLUSION_RADIUS); zz <= z; zz++) { //AMBIENT_OCCLUSION_RADIUS; zz++) {
+
+                                    int tz = zz;//z+zz;
+
+                                    u8 valid_ao_sample = (tx != x && ty != y && tz != z);
+
                                     samples += (valid_ao_sample ? 1 : 0);
-                                    u8 out_of_bounds = (tx < 0 || tx >= 512 || ty < 0 || ty >= 512 || tz < 0 || tz >= (cur_map_max_height+1));
-                                    //int has_bot = (cur_spans[cur_span_idx].bot_surface_end > cur_spans[cur_span_idx].bot_surface_start);
-                                    //int bot = (has_bot ? cur_spans[cur_span_idx].bot_surface_end : (cur_spans[cur_span_idx].top_surface_end+1));
-                                    
-                                    //u8 within_top_surface_span = (tz >= cur_spans[cur_span_idx].top_surface_start && tz < (cur_spans[cur_span_idx].top_surface_end+1));
-                                    //u8 within_bot_surface_span = (tz >= cur_spans[cur_span_idx].bot_surface_start && tz < cur_spans[cur_span_idx].bot_surface_end);
-                                    
-                                    u8 cell_is_solid = voxel_is_solid(tx,ty,tz); //tz >= cur_spans[cur_span_idx].top_surface_start && tz < cur_spans[cur_span_idx].bot_surface_end;
-                                    //u8 cell_is_solid = voxel_is_solid(tx,ty,tz);
-                                    // && voxel_is_solid(tx, ty, tz);
+
+                                    u8 cell_is_solid = get_bit_in_bitmap(tz, &columns_bitmaps_data[test_voxelmap_idx]) ? 1 : 0;
+
                                     solid_cells += ((valid_ao_sample && cell_is_solid) ? 1 : 0);
+                                }
+                                
+                                
+                                
+                                // z is 2 and amb radius is 4
+                                // -2 -> 0
+                                // z is 12 and amb radius is 4
+                                // 8 -> -4
+                                for(int zz = -NORMAL_RADIUS; zz <= NORMAL_RADIUS; zz++) { //AMBIENT_OCCLUSION_RADIUS; zz++) {
+                                    
+                                    int tz = z+zz;
+                                    if(tz < 0) { continue; } // || tz > cur_map_max_height) { continue; }
+                                    //u8 valid_ao_sample = (tz <= z);
+
+                                    //samples += (valid_ao_sample ? 1 : 0);
+                                    //u8 out_of_bounds = (tx < 0 || tx >= MAP_X_SIZE || ty < 0 || ty >= MAP_Y_SIZE || tz < 0 || tz >= (cur_map_max_height+1));
+
+                                    u8 cell_is_solid = get_bit_in_bitmap(tz, &columns_bitmaps_data[test_voxelmap_idx]) ? 1 : 0;
                                     
                                     norm_x += cell_is_solid ? -xx : 0.0;
                                     norm_y += cell_is_solid ? -yy : 0.0;
                                     norm_z += cell_is_solid ? -zz : 0.0;
                                     
-                                    cur_span_idx += (tz >= cur_spans[cur_span_idx].bot_surface_end-1 ? 1 : 0); // is this right?? what was the -1 for -1);
-                                }
-                            }
-                        }
-                    #else 
-                        // slow version, ~10 seconds for radius of 4
-                        for(int yy = -AMBIENT_OCCLUSION_RADIUS; yy <= AMBIENT_OCCLUSION_RADIUS; yy++) {
-                            int ty = y+yy;
-                            for(int xx = -AMBIENT_OCCLUSION_RADIUS; xx <= AMBIENT_OCCLUSION_RADIUS; xx++) {
-                                int tx = x+xx;
-
-                                for(int zz = -AMBIENT_OCCLUSION_RADIUS; zz <= AMBIENT_OCCLUSION_RADIUS; zz++) {
-                                    int tz = z+zz;
-                                    
-                                    u8 valid_ao_sample = (tx != x && ty != y && tz != z) && (tz <= z);
-                                    samples += (valid_ao_sample ? 1 : 0);
-                                    u8 out_of_bounds = (tx < 0 || tx >= 512 || ty < 0 || ty >= 512 || tz < 0 || tz >= 64);
-                                    u8 cell_is_solid = (!out_of_bounds) && voxel_is_solid(tx, ty, tz);
-                                    solid_cells += ((valid_ao_sample && cell_is_solid) ? 1 : 0);
-
-                                    norm_x += cell_is_solid ? xx : 0.0;
-                                    norm_y += cell_is_solid ? yy : 0.0;
-                                    norm_z += cell_is_solid ? zz : 0.0;
-                                
                                 }
                             }
                         }
 
-                    #endif 
 
                         if(norm_x == 0 && norm_y == 0 && norm_z == 0) {
                             norm_z = -1;
@@ -1073,6 +1185,7 @@ void light_map(int min_x, int min_y, int max_x, int max_y) {
                         // 0 -> no filled surrounding voxels, 1 -> all filled surrounding voxels
                         // but divide in 2 to reduce the effect, so the effect is more subtle
                         f32 zero_to_one; 
+                        samples--; // subtract the center sample
                         if(samples == 0) {
                             zero_to_one = 0;
                         } else {
@@ -1112,7 +1225,6 @@ void light_map(int min_x, int min_y, int max_x, int max_y) {
                     }
                 }
             }
-    #endif
         }
     }
 }
@@ -1309,11 +1421,108 @@ thread_pool_function(light_map_wrapper, arg_var)
 	thread_params* tp = (thread_params*)arg_var;
     light_map(tp->min_x, tp->min_y, tp->max_x, tp->max_y);
 	InterlockedIncrement64(&tp->finished);
+    InterlockedDecrement64(&tp->working);
 }
 
 
+u8 tweak_color_rand_table[256*256];
 
-void load_map(s32 map_idx) {  
+void init_rand_table() {
+    for(int i = 0; i < 256; i++) {
+        for(int co = 0; co < 256; co++) {
+            f32 percent_diff = lerp(0.96f, rand()/((float)RAND_MAX), 1.04f);
+            f32 mod_col = (co/256.0f) * percent_diff;
+            f32 clamp_col = (mod_col > 1.0f) ? 1.0f : (mod_col < 0.0f) ? 0.0f : mod_col;
+            tweak_color_rand_table[i*256+co] = (u8)(clamp_col*255.0f);
+        }
+    }
+}
+
+u32 tweak_color(u32 abgr) {
+    //static int rand_table_init = 0;
+    //if(!rand_table_init) {
+    //    rand_table_init = 1;
+    //    init_rand_table();
+    //}
+    //static int rand_table_idx = 0;
+    //return abgr;
+    u8 a = (abgr>>24)&0xFF;
+    float b = (abgr>>16)&0xFF;
+    float g = (abgr>>8)&0xFF;
+    float r = abgr&0xFF;
+    //u8 b = (abgr>>16)&0xFF;
+    //u8 g = (abgr>>8)&0xFF;
+    //u8 r = abgr&0xFF;
+    //b /= 255.0f;
+    //g /= 255.0f;
+    //r /= 255.0f;
+    
+    
+    // don't increase overall luminance (aka vector distance of color)
+    //(b*b)+(g*g)+(r*r);
+    
+
+    //float percent_diff_b = tweak_color_rand_table[(rand_table_idx++)&1023]; 
+    float percent_diff_b = lerp(0.96f, rand()/((float)RAND_MAX), 1.04f); // from 0 to 10
+    b *= percent_diff_b;
+    //float percent_diff_g = tweak_color_rand_table[(rand_table_idx++)&1023];//lerp(0.96f, rand()/((float)RAND_MAX), 1.04f); // from 0 to 10
+    float percent_diff_g = lerp(0.96f, rand()/((float)RAND_MAX), 1.04f); // from 0 to 10
+    g *= percent_diff_g;
+    //float percent_diff_r = tweak_color_rand_table[(rand_table_idx++)&1023];//lerp(0.96f, rand()/((float)RAND_MAX), 1.04f); // from 0 to 10
+    float percent_diff_r = lerp(0.96f, rand()/((float)RAND_MAX), 1.04f); // from 0 to 10
+    r *= percent_diff_r;
+    
+    b = (b > 255.0f) ? 255.0f : (b < 0.0f) ? 0.0f : b;
+    g = (g > 255.0f) ? 255.0f : (g < 0.0f) ? 0.0f : g;
+    r = (r > 255.0f) ? 255.0f : (r < 0.0f) ? 0.0f : r;
+
+    u8 bc = b;//tweak_color_rand_table[(((rand_table_idx++)&0xFF)<<8)+b];//g;
+    u8 gc = g;//tweak_color_rand_table[(((rand_table_idx++)&0xFF)<<8)+g];//g;
+    u8 rc = r;//tweak_color_rand_table[(((rand_table_idx++)&0xFF)<<8)+r];//r;
+ 
+    return (a<<24)|(bc<<16)|(gc<<8)|rc;
+}
+
+
+void tweak_column_colors(int min_x, int min_y, int max_x, int max_y) {
+    for(int y = min_y; y < max_y; y++) {
+        for(int x = min_x; x < max_x; x++) {
+            u32 idx = get_voxelmap_idx(x,y);
+            column_runs runs = columns_runs_data[idx];
+            int col_idx = 0;
+            for(int i = 0; i < columns_header_data[idx].num_runs; i++) {
+                for(int z = runs.runs_info[i].top_surface_start; z <= runs.runs_info[i].top_surface_end; z++) {
+                    columns_colors_data[idx].colors[col_idx] = tweak_color(columns_colors_data[idx].colors[col_idx]);
+                    col_idx++;
+
+                }
+                for(int z = runs.runs_info[i].bot_surface_start; z < runs.runs_info[i].bot_surface_end; z++) {
+                    columns_colors_data[idx].colors[col_idx] = tweak_color(columns_colors_data[idx].colors[col_idx]);
+                    col_idx++;
+                }
+            }
+        }
+    }
+}
+
+thread_pool_function(tweak_column_colors_wrapper, arg_var)
+{
+	thread_params* tp = (thread_params*)arg_var;
+    tweak_column_colors(tp->min_x, tp->min_y, tp->max_x, tp->max_y);
+	InterlockedIncrement64(&tp->finished);
+}
+#define LIGHT_CHUNK_SIZE 256
+typedef struct {
+    u32 min_x; u32 min_y;
+    u8 lit;
+} map_light_chunk;
+map_light_chunk light_map_chunks[(MAP_Y_SIZE/LIGHT_CHUNK_SIZE)*(MAP_X_SIZE/LIGHT_CHUNK_SIZE)];
+
+
+int light_map_size;
+
+void load_map(s32 map_idx) {
+
     if(!map_table_loaded) {
         load_map_table();
     }
@@ -1325,16 +1534,50 @@ void load_map(s32 map_idx) {
     char buf[32];
     sprintf(buf, "./maps/%s", &map_name_table[map_idxs[map_idx]]);
 
-    cur_map_max_height = 63;
-    int err = load_voxlap_map(buf, 63);
+    eye_height = 12;
+    knee_height = 4;
+    accel = .68f;
+    vel = 0.0f;
+    max_accel = 80.0f;
+    
+    move_forward_speed = .7f;
+    strafe_speed = 1.8f;
+    fly_speed = 2.2f;
+
+    memset(light_map_chunks, 0, sizeof(light_map_chunks));
+
+    memset(columns_bitmaps_data, 0, sizeof(column_bitmaps)*1024*1024);
+    memset(columns_norm_data, 0, sizeof(column_normals)*1024*1024);
+    memset(columns_colors_data, 0, sizeof(column_colors)*1024*1024);
+    memset(columns_runs_data, 0, sizeof(column_runs)*1024*1024);
+    memset(columns_header_data, 0, sizeof(column_header)*1024*1024);
+    
+
+
+    int double_map = 1;
+    cur_map_max_height = 127;// 63;
+    int err = load_voxlap_map(buf, 63, 1);
+
     if(err == INVALID_MAX_EXPECTED_HEIGHT) {
         printf("retrying load with 127\n");
-        cur_map_max_height = 127;
-        err = load_voxlap_map(buf, 127);
+        cur_map_max_height = 255; // 127
+        err = load_voxlap_map(buf, 127, 1);
+
         if(err == INVALID_MAX_EXPECTED_HEIGHT) {
-            printf("retrying load with 255\n");
+            //printf("Map is too tall!\n");
+            //exit(1);
+            //printf("retrying load with 255\n");
             cur_map_max_height = 255;
-            err = load_voxlap_map(buf, 255);
+            eye_height = 6;
+            knee_height = 2;
+            accel = .38f;
+            max_accel = 40.0f;
+            double_map = 0;
+            
+            move_forward_speed = .35f;
+            strafe_speed = .9f;
+            fly_speed = 1.1f;
+            err = load_voxlap_map(buf, 255, 0);
         }
     }
     
@@ -1348,68 +1591,166 @@ void load_map(s32 map_idx) {
     //exit(1);
 
 
-    thread_params parms[NUM_LIGHT_MAP_THREADS];
+
+    if(double_map) {
+        light_map_size = 1024;
+        for(int y = 511; y >= 0; y--) {
+            int output_y = y*2;
+            for(int x = 511; x >= 0; x--) {
+                int output_x = x*2;
+                int src_idx = get_voxelmap_idx(x,y);
+                int dst1_idx = get_voxelmap_idx(x*2,y*2);
+                int dst2_idx = get_voxelmap_idx(x*2+1,y*2);
+                int dst3_idx = get_voxelmap_idx(x*2,y*2+1);
+                int dst4_idx = get_voxelmap_idx(x*2+1,y*2+1);
+
+                columns_header_data[dst1_idx] = columns_header_data[src_idx];
+                columns_header_data[dst2_idx] = columns_header_data[src_idx];
+                columns_header_data[dst3_idx] = columns_header_data[src_idx];
+                columns_header_data[dst4_idx] = columns_header_data[src_idx];
+
+                columns_colors_data[dst1_idx] = columns_colors_data[src_idx];
+                columns_colors_data[dst2_idx] = columns_colors_data[src_idx];
+                columns_colors_data[dst3_idx] = columns_colors_data[src_idx];
+                columns_colors_data[dst4_idx] = columns_colors_data[src_idx];
+
+                columns_runs_data[dst1_idx] = columns_runs_data[src_idx];
+                columns_runs_data[dst2_idx] = columns_runs_data[src_idx];
+                columns_runs_data[dst3_idx] = columns_runs_data[src_idx];
+                columns_runs_data[dst4_idx] = columns_runs_data[src_idx];
+
+                columns_norm_data[dst1_idx] = columns_norm_data[src_idx];
+                columns_norm_data[dst2_idx] = columns_norm_data[src_idx];
+                columns_norm_data[dst3_idx] = columns_norm_data[src_idx];
+                columns_norm_data[dst4_idx] = columns_norm_data[src_idx];
+
+                columns_bitmaps_data[dst1_idx] = columns_bitmaps_data[src_idx];
+                columns_bitmaps_data[dst2_idx] = columns_bitmaps_data[src_idx];
+                columns_bitmaps_data[dst3_idx] = columns_bitmaps_data[src_idx];
+                columns_bitmaps_data[dst4_idx] = columns_bitmaps_data[src_idx];
+            }
+        }
+    
+
+        
+        thread_params colors_parms[NUM_LIGHT_MAP_THREADS];
+        for(int i = 0; i < NUM_LIGHT_MAP_THREADS; i++) {
+            colors_parms[i].finished = 0;
+            colors_parms[i].min_x = (i == 0) ? 0 : colors_parms[i-1].max_x; //min_x + (draw_dx*i/RAYCAST_THREADS);
+            colors_parms[i].max_x = (i == NUM_LIGHT_MAP_THREADS-1) ? (light_map_size) : (colors_parms[i].min_x + ((light_map_size)/NUM_LIGHT_MAP_THREADS));
+            colors_parms[i].min_y = 0;
+            colors_parms[i].max_y = light_map_size;
+        }
+        job_pool rp = {
+            .num_jobs = NUM_LIGHT_MAP_THREADS,
+            .func = tweak_column_colors_wrapper,
+            .raw_func = tweak_column_colors,
+            .parms = colors_parms
+        };
+        
+        u32 color_mod_start = SDL_GetTicks();
+        start_pool(map_pool, &rp);
+        wait_for_job_pool_to_finish(&rp);
+        
+        //tweak_column_colors(0,0, MAP_X_SIZE, MAP_Y_SIZE);
+        //for(int y = 0; y < MAP_Y_SIZE; y++) {
+        //    for(int x = 0; x < MAP_X_SIZE; x++) {
+        //    }
+        //}
+
+        u32 color_mod_end = SDL_GetTicks();
+        u32 color_mod_dt_ms = (color_mod_end - color_mod_start);
+        printf("COLOR MODULATION TOOK %ums\n", color_mod_dt_ms);
+
+    } else {
+        light_map_size = 512;
+    }
+
+    u32 bitmap_start = SDL_GetTicks();
+    // build bitmap cache (only 33MB, might as well keep it around)
+    for(int y = 0; y < MAP_Y_SIZE; y++) {
+        for(int x = 0; x < MAP_X_SIZE; x++) {
+            u32 idx = get_voxelmap_idx(x,y);
+            col_to_solid_bitmap(idx, &columns_bitmaps_data[idx]);
+        }
+    }
+    u32 bitmap_end = SDL_GetTicks();
+    u32 bitmap_dt_ms = (bitmap_end - bitmap_start);
+    printf("BITMAP CONSTRUCTION TOOK %ums\n", bitmap_dt_ms);
+
+    int num_light_chunks_per_axis = light_map_size / LIGHT_CHUNK_SIZE;
+    for(int y = 0; y < num_light_chunks_per_axis; y++) {
+        for(int x = 0; x < num_light_chunks_per_axis; x++) {
+            light_map_chunks[y*num_light_chunks_per_axis + x].min_x = x * LIGHT_CHUNK_SIZE;
+            light_map_chunks[y*num_light_chunks_per_axis + x].min_y = y * LIGHT_CHUNK_SIZE;
+            light_map_chunks[y*num_light_chunks_per_axis + x].lit = 0;
+        }
+    }
+
+    light_map(0, 0, LIGHT_CHUNK_SIZE, LIGHT_CHUNK_SIZE);
+
+    light_map_chunks[0].lit = 1;
+    /*
+    thread_params light_map_parms[NUM_LIGHT_MAP_THREADS];
     for(int i = 0; i < NUM_LIGHT_MAP_THREADS; i++) {
-        parms[i].finished = 0;
-        parms[i].min_x = (i == 0) ? 0 : parms[i-1].max_x; //min_x + (draw_dx*i/RAYCAST_THREADS);
-        parms[i].max_x = (i == NUM_LIGHT_MAP_THREADS-1) ? 511 : (parms[i].min_x + (511/NUM_LIGHT_MAP_THREADS));
-        parms[i].min_y = 0;
-        parms[i].max_y = 511;
+        light_map_parms[i].finished = 0;
+        light_map_parms[i].min_x = (i == 0) ? 0 : light_map_parms[i-1].max_x; //min_x + (draw_dx*i/RAYCAST_THREADS);
+        light_map_parms[i].max_x = (i == NUM_LIGHT_MAP_THREADS-1) ? (light_map_size-1) : (light_map_parms[i].min_x + ((light_map_size-1)/NUM_LIGHT_MAP_THREADS));
+        light_map_parms[i].min_y = 0;
+        light_map_parms[i].max_y = light_map_size;
     }
     job_pool rp = {
         .num_jobs = NUM_LIGHT_MAP_THREADS,
         .func = light_map_wrapper,
         .raw_func = light_map,
-        .parms = parms
+        .parms = light_map_parms
     };
+    
+    u32 light_start = SDL_GetTicks();
     start_pool(pool, &rp);
-    wait_for_render_pool_to_finish(&rp);
+    wait_for_job_pool_to_finish(&rp);
+    u32 light_end = SDL_GetTicks();
+    u32 light_dt_ms = (light_end - light_start);
+    printf("LIGHT MAP TOOK %ums\n", light_dt_ms);
     //light_map_bitmap();
-#define DUPLICATE_MAP
-#ifdef DUPLICATE_MAP
-    int quadrant_offsets[3][2] = {{0,512},{512,0},{512,512}};
-    for(int quadrant = 0; quadrant < 3; quadrant++) {
-        for(int y = 0; y < 512; y++) {
-            for(int x = 0; x < 512; x++) {
-                // copy from source to output quadrant
-             
-                u32 src_idx = get_voxelmap_idx(x, y);
-                u32 dst_idx = get_voxelmap_idx(x+quadrant_offsets[quadrant][0], y+quadrant_offsets[quadrant][1]);
+//#define DUPLICATE_MAP
+    */
 
-                u32* src_color_ptr = &columns_colors_data[src_idx].colors[0];
-                span* src_runs = &columns_runs_data[src_idx].runs_info[0];
-                column_header* src_header = &columns_header_data[src_idx];
 
-                u32* dst_color_ptr = &columns_colors_data[dst_idx].colors[0];
-                span* dst_runs = &columns_runs_data[dst_idx].runs_info[0];
-                column_header* dst_header = &columns_header_data[dst_idx];
-
-                columns_runs_data[dst_idx] = columns_runs_data[src_idx];
-                columns_header_data[dst_idx] = columns_header_data[src_idx];
-                columns_colors_data[dst_idx] = columns_colors_data[src_idx];
-                columns_norm_data[dst_idx] = columns_norm_data[src_idx];
-                
-                
-
-            }
-        }
-    }
-#endif 
-
-    //profile_block light_map_block;
-    //TimeBlock(light_map_block, "light map");
-    //light_map(0, 0, 511, 511);
-    //EndTimeBlock(light_map_block);
-
-    //for(int x = 0; x < 512; x += 2) {
-    //    for(int y = 0; y < 512; y += 2) {
+    //for(int x = 0; x < MAP_X_SIZE; x += 2) {
+    //    for(int y = 0; y < MAP_Y_SIZE; y += 2) {
     //        mip_columns(x, x+1, y, y+1);
     //    }
     //}
-
     return;      
 }
 
+int find_closest_unlit_chunk(f32 pos_x, f32 pos_y) {
+    int closest_idx = -1;
+    int closest_sq_dist = -1;
+    int num_light_chunks_per_axis = light_map_size / LIGHT_CHUNK_SIZE;
+    for(int y = 0; y < num_light_chunks_per_axis; y++) {
+        for(int x = 0; x < num_light_chunks_per_axis; x++) {
+            int idx = y*num_light_chunks_per_axis + x;
+            if(light_map_chunks[idx].lit) { 
+                continue;
+            }
+            //return idx;
+            int tx = light_map_chunks[idx].min_x + (LIGHT_CHUNK_SIZE/2);
+            int ty = light_map_chunks[idx].min_y + (LIGHT_CHUNK_SIZE/2);
+            int dx = tx-pos_x;
+            int dy = ty-pos_y;
+            int sq_dist = dx*dx + dy*dy;
+            if(closest_idx == -1 || (sq_dist < closest_sq_dist)) {
+                closest_sq_dist = sq_dist;
+                closest_idx = idx;
+            }
+        }
+    }
+    return closest_idx;
+
+
+}
 
 
 #endif

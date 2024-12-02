@@ -96,50 +96,48 @@ void handle_keydown(SDL_KeyboardEvent key);
 void handle_keyup(SDL_KeyboardEvent key);
 
 
-double GetTicks() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec + ts.tv_nsec / 1000000000.0;
-}
 
+double start_dt = 100000000000000.0;
 
-int main(int argc, char** argv)
-{
+int main(int argc, char** argv) {
+
     int result = 0;
-
-
     {
         if (SDL_Init(SDL_INIT_VIDEO) < 0) return_defer(1);
         
         window = SDL_CreateWindow("Voxworld", 40, 40, OUTPUT_WIDTH, OUTPUT_HEIGHT, 0);//, SDL_WINDOW_MOUSE_CAPTURE);
-        if(SDL_SetRelativeMouseMode(SDL_TRUE) == -1) {
-            printf("wtf?!");
-            exit(1);
-        }
-        SDL_ShowCursor(0);
+        
+        //if(SDL_SetRelativeMouseMode(SDL_TRUE) == -1) {
+        //    printf("wtf?!");
+        //    exit(1);
+        //}
+        //SDL_ShowCursor(0);
 
         if (window == NULL) return_defer(1);
 
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);//SDL_RENDERER_PRESENTVSYNC);
         if (renderer == NULL) return_defer(1);
 
         //SDL_GL_SetSwapInterval(0);
-        double prev = SDL_GetTicks();
-        double prevticks = GetTicks();
+        double prevticks = GetTicks(); //+ start_dt;
         bool pause = false;
 
-        
+        u64 prev = SDL_GetTicks64();
 
+        
+        atexit(&cleanup_threads);
+        
         int mouse_x, mouse_y;
 
         for (;;) {
             // Compute Delta Time
-            double curr = SDL_GetTicks();
-            double currticks = GetTicks();
-            float dt = (curr - prev)/1000.f;
+            double currticks = GetTicks();// + start_dt;
             double double_dt = (currticks - prevticks);
-            prev = curr;
+            u64 ticks_ms = SDL_GetTicks64();
+            u64 curr = SDL_GetTicks64();
+            //double double_dt = curr - prev;
             prevticks = currticks;
+            prev = curr;
             
             u32 mouse_state;
             if(mouse_captured) {
