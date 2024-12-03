@@ -25,8 +25,8 @@
 #define NUM_RENDER_THREADS 1
 #define NUM_LIGHT_MAP_THREADS 1
 #else
-#define NUM_RENDER_THREADS 10
-#define NUM_LIGHT_MAP_THREADS 6
+#define NUM_RENDER_THREADS 16
+#define NUM_LIGHT_MAP_THREADS 16
 #endif
 
 #include "selectable_profiler.c"
@@ -314,6 +314,10 @@ f32 cam_pos_z = 0.0f;
 #include "voxelmap.c"
 
 void init_player_positions() {
+    
+    if(!gravmode) {
+        return;
+    }
     vel = 0.0f;
     pos_x = 10.0f;
     pos_y = 10.0f;
@@ -857,15 +861,16 @@ void update_mouse_pos(int mouse_x, int mouse_y) {
     cur_mouse_y = mouse_y;
 }
 
-
-thread_params light_chunk_parms[6] = {
+#define MAX_THREADS_FOR_CHUNK_LIGHTING 6
+thread_params light_chunk_parms[MAX_THREADS_FOR_CHUNK_LIGHTING] = {
     {.finished = 1, .working = 0}, {.finished = 1, .working = 0},
     {.finished = 1, .working = 0}, {.finished = 1, .working = 0},
     {.finished = 1, .working = 0}, {.finished = 1, .working = 0}
     };
 
+
 job_pool light_pool_jobs = {
-    .num_jobs = 6
+    .num_jobs = MAX_THREADS_FOR_CHUNK_LIGHTING
 };
 
 void cleanup_threads() {
@@ -1449,7 +1454,9 @@ Olivec_Canvas vc_render(double dt) {
     if(!map_loaded) {
         load_map(cur_map++);
         map_loaded = 1;
-        init_player_positions();
+        if(!gravmode) {
+            init_player_positions();
+        }
     }
 
     // working 0 -> not started
@@ -1457,7 +1464,7 @@ Olivec_Canvas vc_render(double dt) {
     // working 1, finished 1 -> started, finished
 
     int gathered_jobs = 0;
-    for(int i = 0; i < NUM_LIGHT_MAP_THREADS; i++) {
+    for(int i = 0; i < MAX_THREADS_FOR_CHUNK_LIGHTING; i++) {
         if(light_chunk_parms[i].finished == 0) {
             continue;
         }
@@ -1785,7 +1792,7 @@ Olivec_Canvas vc_render(double dt) {
     {
         thread_params parms[NUM_RENDER_THREADS];
         
-        if(double_pixels == 4) {
+        if(double_pixels == 2 && OUTPUT_WIDTH == 1024) {
             // the left edge of the screen breaks in this pass with 8 jobs, prob not divisible by 8
             // honestly, it runs so much faster that I sort of don't care about using 8 threads here
             for(int i = 0; i < 2; i++) {
@@ -2297,10 +2304,10 @@ void rotate_light_and_blend(s32 min_x, s32 min_y, s32 max_x, s32 max_y) {
 
                 
                     if(lighting) { // } == FANCY_LIGHTING) {
-                        __m256 dot_lights = //_mm256_add_ps(
-                                                //_mm256_mul_ps(normal_xs, sun_vec_x_vec),
+                        __m256 dot_lights = _mm256_add_ps(
+                                                _mm256_mul_ps(normal_xs, sun_vec_x_vec),
                                                 _mm256_add_ps(_mm256_mul_ps(normal_ys, sun_vec_y_vec),
-                                                                _mm256_mul_ps(normal_zs, sun_vec_z_vec));//);
+                                                                _mm256_mul_ps(normal_zs, sun_vec_z_vec)));
 
                         __m256 color_norm_scales = _mm256_min_ps(one_ps_vec, 
                                                         _mm256_add_ps(_mm256_max_ps(zero_ps_vec, 

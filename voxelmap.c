@@ -92,12 +92,11 @@ void allocate_map_data() {
     columns_colors_data = malloc_wrapper(sizeof(column_colors)*1024*1024, "column colors");
     columns_runs_data = malloc_wrapper(sizeof(column_runs)*1024*1024, "column runs");
     columns_norm_data = malloc_wrapper(sizeof(column_normals)*1024*1024, "column normals");
-
+    columns_bitmaps_data = malloc_wrapper(sizeof(column_bitmaps)*1024*1024, "column bitmaps");
     //mip_columns_header_data = malloc(sizeof(column_header)*512*512);
     //mip_columns_colors_data = malloc(sizeof(column_colors)*512*512);
     //mip_columns_runs_data = malloc(sizeof(column_runs)*512*512);
     //mip_columns_norm_data = malloc(sizeof(column_normals)*512*512);
-    columns_bitmaps_data = malloc_wrapper(sizeof(column_bitmaps)*1024*1024, "column bitmaps");
     map_data_allocated = 1;
 }
 
@@ -617,9 +616,9 @@ void add_sphere(s32 sx, s32 sy, s32 sz, s32 radius) {
 #endif
 
 u32 count_colors_in_span(span sp) {
-    u32 num_colors = ((sp.top_surface_end+1)-sp.top_surface_start) + (sp.bot_surface_end - sp.bot_surface_start);
+    u32 num_colors = ((sp.top_surface_end+1)-sp.top_surface_start);
     if(sp.bot_surface_end > sp.bot_surface_start) {
-        num_colors += (sp.bot_surface_end + sp.bot_surface_start);
+        num_colors += (sp.bot_surface_end - sp.bot_surface_start);
     }
     return num_colors;
 }
@@ -835,7 +834,7 @@ int load_voxlap_map(char* file, int expected_height, int double_height) {
     long len = ftell(f);
     fseek(f, 0, SEEK_SET);  /* same as rewind(f); */
 
-    char *bytes = malloc_wrapper(len, "buffer for map");
+    char *bytes = malloc_wrapper(len, "buffer for map file");
     fread(bytes, len, 1, f);
     fclose(f);
 
@@ -942,17 +941,17 @@ int load_voxlap_map(char* file, int expected_height, int double_height) {
         goto bad_dimensions;
     }
 
-    free(bytes);
+    free_wrapper(bytes, "buffer for map file");
     return 0;
 bad_dimensions:
-    free(bytes);
+    free_wrapper(bytes, "buffer for map file");
     return BAD_DIMENSIONS;
     
 
 }
 
 
-#define AMBIENT_OCCLUSION_RADIUS 3
+#define AMBIENT_OCCLUSION_RADIUS 1
 #define NORMAL_RADIUS 2
 
 #define AMBIENT_OCCLUSION_DIAMETER (AMBIENT_OCCLUSION_RADIUS*2+1)
@@ -1028,91 +1027,7 @@ void light_map(int min_x, int min_y, int max_x, int max_y) {
                         f32 norm_x = 0.0;
                         f32 norm_y = 0.0;
                         f32 norm_z = 0.0;
-                        /*
-                        // 25 columns
-                        column_bitmaps bmps[25];
-                        // -2,-1,0,1,2
-                        for(int cy = 0; cy <= AMBIENT_OCCLUSION_DIAMETER; cy++) {
-                            int yy = cy - AMBIENT_OCCLUSION_RADIUS;
-                            for(int cx = 0; cx <= AMBIENT_OCCLUSION_DIAMETER; x++) {
-                                int xx = cx - AMBIENT_OCCLUSION_RADIUS;
-                                
-                                bmps[cy*AMBIENT_OCCLUSION_DIAMETER+cx] = columns_bitmaps_data[get_voxelmap_idx(y+xx, y+yy)];
-                            }
-                        }
-                        */
-                        
-                        // sum bitmaps for position?
-                        /*
-                        for(int z = 0; z < cur_map_max_height; z++) {
-                            // 
-                            u64 bit01, bit02; // 3
-                            u64 bit11, bit12; // 3
-                            u64 bit21, bit22; // 3
-                            u64 bit31, bit32; // 3
-                            u64 bit41, bit42; // 3
-                            u64 bit51, bit52; // 3
-                            u64 bit61, bit62; // 3
-                            u64 bit71, bit72; // 3
-                            u64 bit81, bit82; // up to 1
 
-
-                            u64 carry;
-                            ADD3(bit01, bit02, bmps[0].bits[z], bmps[1].bits[z], bmps[2].bits[z]); // up to 3
-                            ADD3(bit11, bit12, bmps[3].bits[z], bmps[4].bits[z], bmps[5].bits[z]); // up to 3
-                            ADD3(bit21, bit22, bmps[6].bits[z], bmps[7].bits[z], bmps[8].bits[z]); // up to 3
-                            ADD3(bit31, bit32, bmps[9].bits[z], bmps[10].bits[z], bmps[11].bits[z]); // up to 3
-                            ADD3(bit41, bit42, bmps[12].bits[z], bmps[13].bits[z], bmps[14].bits[z]); // up to 3
-                            ADD3(bit51, bit52, bmps[15].bits[z], bmps[16].bits[z], bmps[17].bits[z]); // up to 3
-                            ADD3(bit61, bit62, bmps[18].bits[z], bmps[19].bits[z], bmps[20].bits[z]); // up to 3
-                            ADD3(bit71, bit72, bmps[21].bits[z], bmps[22].bits[z], bmps[23].bits[z]); // up to 3
-                            bit81 = bmps[24].bits[z];
-                            bit82 = 0;
-
-
-                            // add the low bits
-                            // add the high bits with carry
-                            u64 carry;
-                            u64 sbit01, sbit02, sbit03; // up to 6
-                            u64 sbit11, sbit12, sbit13; // up to 6
-                            u64 sbit21, sbit22, sbit23; // up to 6
-                            u64 sbit31, sbit32, sbit33; // up to 6
-                            u64 sbit41, sbit42, sbit43; // up to 1
-                            ADD2_2(sbit01, sbit02, sbit03,  bit01, bit02,  bit11, bit12);
-                            ADD2_2(sbit11, sbit12, sbit13,  bit21, bit22,  bit31, bit32);
-                            ADD2_2(sbit21, sbit22, sbit23,  bit41, bit42,  bit51, bit52);
-                            ADD2_2(sbit31, sbit32, sbit33,  bit61, bit62,  bit71, bit72);
-                            sbit41 = bit81;
-
-                            u64 s2bit01, s2bit02, s2bit03, s2bit04; // up to 12
-                            u64 s2bit11, s2bit12, s2bit13, s2bit14; // up to 12
-                            u64 s2bit21; // 1
-
-                            ADD3_3(s2bit01, s2bit02, s2bit03, s2bit04,  sbit01, sbit02, sbit03,  sbit11, sbit12, sbit13);
-                            ADD3_3(s2bit11, s2bit12, s2bit13, s2bit14,  sbit11, sbit12, sbit13,  sbit21, sbit22, sbit23);
-                            s2bit21 = sbit41;
-
-                            u64 s3bit01, s3bit02, s3bit03, s3bit04, s3bit05; // up to 24
-                            u64 s3bit11; // 1
-                            ADD4_4(s3bit01, s3bit02, s3bit03, s3bit04,s3bit05,  s2bit01, s2bit02, s2bit03, s2bit04, s2bit11, s2bit12, s2bit13, s2bit14);
-                            s3bit11 = s2bit21;
-
-                            // add and carry
-                            u64 carry;
-                            u64 outbit1, outbit2, outbit3, outbit4, outbit5, outbit6; // technically can only go up to 25, so i think the last bit will always be zero
-                            ADD2(outbit1, carry, s3bit01, s3bit11);
-                            ADD2(outbit2, carry, s3bit02, carry);
-                            ADD2(outbit3, carry, s3bit03, carry);
-                            ADD2(outbit4, carry, s3bit04, carry);
-                            ADD2(outbit5, outbit6, s3bit05, carry);
-                            // 6 output bits, with a count of up to 25
-
-                            // needs to be able to go up to 125
-
-
-                        }
-
-                        */
                         for(int yy = -AMBIENT_OCCLUSION_RADIUS; yy <= AMBIENT_OCCLUSION_RADIUS; yy++) {
                             int ty = y+yy;
                             if(ty < 0 || ty >= MAP_Y_SIZE) { continue; }
@@ -1142,7 +1057,7 @@ void light_map(int min_x, int min_y, int max_x, int max_y) {
 
                                     int tz = zz;//z+zz;
 
-                                    u8 valid_ao_sample = (tx != x && ty != y && tz != z);
+                                    u8 valid_ao_sample = 1;//(tx != x && ty != y && tz != z);
 
                                     samples += (valid_ao_sample ? 1 : 0);
 
@@ -1150,6 +1065,7 @@ void light_map(int min_x, int min_y, int max_x, int max_y) {
 
                                     solid_cells += ((valid_ao_sample && cell_is_solid) ? 1 : 0);
                                 }
+                                
                                 
                                 
                                 
@@ -1186,16 +1102,18 @@ void light_map(int min_x, int min_y, int max_x, int max_y) {
                         // but divide in 2 to reduce the effect, so the effect is more subtle
                         f32 zero_to_one; 
                         samples--; // subtract the center sample
+                        solid_cells--;
                         if(samples == 0) {
                             zero_to_one = 0;
                         } else {
-                            zero_to_one = ((solid_cells*.75)/(f32)samples);
+                            zero_to_one = ((solid_cells*.25)/(f32)samples);
                         }
+
 
                         f32 one_to_zero = 1-zero_to_one; // 0-> all filled surrounding voxels, 0.5-> no filled surrounding voxels
 
                         // each albedo has 6 AO bits, so use up all 6 of them
-                        f32 one_to_zero_scaled = 63.0 * one_to_zero; // scale from 0->.5 to 0-63
+                        f32 one_to_zero_scaled = 63.0 * one_to_zero; //63.0 * one_to_zero; // scale from 0->.5 to 0-63
 
 
                         f32 len = magnitude_vector(norm_x, norm_y, norm_z);
@@ -1206,7 +1124,6 @@ void light_map(int min_x, int min_y, int max_x, int max_y) {
                         voxel_set_normal(x, y, z, norm.x, norm.y);
 
                         //f32 i = ((((fnorm_y * .5) + fnorm_z) * 64.0 + 103.5)/256.0);
-
 
                         u8 one_to_zero_ao_bits = ((u8)floorf(one_to_zero_scaled));
                         u32 base_color = voxel_get_color(x, y, z);
@@ -1426,33 +1343,30 @@ thread_pool_function(light_map_wrapper, arg_var)
 
 
 u8 tweak_color_rand_table[256*256];
+int rand_table_idx = 0;
+int rand_table_init = 0;
 
 void init_rand_table() {
     for(int i = 0; i < 256; i++) {
         for(int co = 0; co < 256; co++) {
             f32 percent_diff = lerp(0.96f, rand()/((float)RAND_MAX), 1.04f);
             f32 mod_col = (co/256.0f) * percent_diff;
-            f32 clamp_col = (mod_col > 1.0f) ? 1.0f : (mod_col < 0.0f) ? 0.0f : mod_col;
+            f32 clamp_col = (mod_col > 1.0f) ? 1.0f : ((mod_col < 0.0f) ? 0.0f : mod_col);
             tweak_color_rand_table[i*256+co] = (u8)(clamp_col*255.0f);
         }
     }
 }
 
 u32 tweak_color(u32 abgr) {
-    //static int rand_table_init = 0;
-    //if(!rand_table_init) {
-    //    rand_table_init = 1;
-    //    init_rand_table();
-    //}
-    //static int rand_table_idx = 0;
+    
     //return abgr;
     u8 a = (abgr>>24)&0xFF;
-    float b = (abgr>>16)&0xFF;
-    float g = (abgr>>8)&0xFF;
-    float r = abgr&0xFF;
-    //u8 b = (abgr>>16)&0xFF;
-    //u8 g = (abgr>>8)&0xFF;
-    //u8 r = abgr&0xFF;
+    //float b = (abgr>>16)&0xFF;
+    //float g = (abgr>>8)&0xFF;
+    //float r = abgr&0xFF;
+    u8 b = (abgr>>16)&0xFF;
+    u8 g = (abgr>>8)&0xFF;
+    u8 r = abgr&0xFF;
     //b /= 255.0f;
     //g /= 255.0f;
     //r /= 255.0f;
@@ -1461,30 +1375,31 @@ u32 tweak_color(u32 abgr) {
     // don't increase overall luminance (aka vector distance of color)
     //(b*b)+(g*g)+(r*r);
     
-
+    //f32 recip_rand_max = 1.0f/RAND_MAX;
     //float percent_diff_b = tweak_color_rand_table[(rand_table_idx++)&1023]; 
-    float percent_diff_b = lerp(0.96f, rand()/((float)RAND_MAX), 1.04f); // from 0 to 10
-    b *= percent_diff_b;
+    //float percent_diff_b = lerp(0.96f, ((f32)rand())*recip_rand_max, 1.04f); // from 0 to 10
+    //b *= percent_diff_b;
     //float percent_diff_g = tweak_color_rand_table[(rand_table_idx++)&1023];//lerp(0.96f, rand()/((float)RAND_MAX), 1.04f); // from 0 to 10
-    float percent_diff_g = lerp(0.96f, rand()/((float)RAND_MAX), 1.04f); // from 0 to 10
-    g *= percent_diff_g;
+    //float percent_diff_g = lerp(0.96f, ((f32)rand())*recip_rand_max, 1.04f); // from 0 to 10
+    //g *= percent_diff_g;
     //float percent_diff_r = tweak_color_rand_table[(rand_table_idx++)&1023];//lerp(0.96f, rand()/((float)RAND_MAX), 1.04f); // from 0 to 10
-    float percent_diff_r = lerp(0.96f, rand()/((float)RAND_MAX), 1.04f); // from 0 to 10
-    r *= percent_diff_r;
+    //float percent_diff_r = lerp(0.96f, ((f32)rand())*recip_rand_max, 1.04f); // from 0 to 10
+    //r *= percent_diff_r;
     
-    b = (b > 255.0f) ? 255.0f : (b < 0.0f) ? 0.0f : b;
-    g = (g > 255.0f) ? 255.0f : (g < 0.0f) ? 0.0f : g;
-    r = (r > 255.0f) ? 255.0f : (r < 0.0f) ? 0.0f : r;
+    //b = (b > 255.0f) ? 255.0f : (b < 0.0f) ? 0.0f : b;
+    //g = (g > 255.0f) ? 255.0f : (g < 0.0f) ? 0.0f : g;
+    //r = (r > 255.0f) ? 255.0f : (r < 0.0f) ? 0.0f : r;
 
-    u8 bc = b;//tweak_color_rand_table[(((rand_table_idx++)&0xFF)<<8)+b];//g;
-    u8 gc = g;//tweak_color_rand_table[(((rand_table_idx++)&0xFF)<<8)+g];//g;
-    u8 rc = r;//tweak_color_rand_table[(((rand_table_idx++)&0xFF)<<8)+r];//r;
+    u8 bc = tweak_color_rand_table[(((rand_table_idx++)&0xFF)<<8)+b];//g;
+    u8 gc = tweak_color_rand_table[(((rand_table_idx++)&0xFF)<<8)+g];//g;
+    u8 rc = tweak_color_rand_table[(((rand_table_idx++)&0xFF)<<8)+r];//r;
  
     return (a<<24)|(bc<<16)|(gc<<8)|rc;
 }
 
 
 void tweak_column_colors(int min_x, int min_y, int max_x, int max_y) {
+
     for(int y = min_y; y < max_y; y++) {
         for(int x = min_x; x < max_x; x++) {
             u32 idx = get_voxelmap_idx(x,y);
@@ -1511,7 +1426,7 @@ thread_pool_function(tweak_column_colors_wrapper, arg_var)
     tweak_column_colors(tp->min_x, tp->min_y, tp->max_x, tp->max_y);
 	InterlockedIncrement64(&tp->finished);
 }
-#define LIGHT_CHUNK_SIZE 256
+#define LIGHT_CHUNK_SIZE 128
 typedef struct {
     u32 min_x; u32 min_y;
     u8 lit;
@@ -1591,9 +1506,22 @@ void load_map(s32 map_idx) {
     //exit(1);
 
 
+    u32 bitmap_start = SDL_GetTicks();
+    // build bitmap cache (only 33MB, might as well keep it around)
+    for(int y = 0; y < 512; y++) {
+        for(int x = 0; x < 512; x++) {
+            u32 idx = get_voxelmap_idx(x,y);
+            col_to_solid_bitmap(idx, &columns_bitmaps_data[idx]);
+        }
+    }
+    u32 bitmap_end = SDL_GetTicks();
+    u32 bitmap_dt_ms = (bitmap_end - bitmap_start);
+    printf("BITMAP CONSTRUCTION TOOK %ums\n", bitmap_dt_ms);
 
     if(double_map) {
         light_map_size = 1024;
+        u32 double_start = SDL_GetTicks();
+
         for(int y = 511; y >= 0; y--) {
             int output_y = y*2;
             for(int x = 511; x >= 0; x--) {
@@ -1608,21 +1536,29 @@ void load_map(s32 map_idx) {
                 columns_header_data[dst2_idx] = columns_header_data[src_idx];
                 columns_header_data[dst3_idx] = columns_header_data[src_idx];
                 columns_header_data[dst4_idx] = columns_header_data[src_idx];
+                u32 colors_to_copy = 0;
+                for(int j = 0; j < columns_header_data[src_idx].num_runs; j++) {
+                    colors_to_copy += count_colors_in_span(columns_runs_data[src_idx].runs_info[j]);
+                    
+                }
+                memcpy(columns_runs_data[dst1_idx].runs_info, columns_runs_data[src_idx].runs_info, sizeof(span)*columns_header_data[src_idx].num_runs);
+                memcpy(columns_runs_data[dst2_idx].runs_info, columns_runs_data[src_idx].runs_info, sizeof(span)*columns_header_data[src_idx].num_runs);
+                memcpy(columns_runs_data[dst3_idx].runs_info, columns_runs_data[src_idx].runs_info, sizeof(span)*columns_header_data[src_idx].num_runs);
+                memcpy(columns_runs_data[dst4_idx].runs_info, columns_runs_data[src_idx].runs_info, sizeof(span)*columns_header_data[src_idx].num_runs);
 
-                columns_colors_data[dst1_idx] = columns_colors_data[src_idx];
-                columns_colors_data[dst2_idx] = columns_colors_data[src_idx];
-                columns_colors_data[dst3_idx] = columns_colors_data[src_idx];
-                columns_colors_data[dst4_idx] = columns_colors_data[src_idx];
+                memcpy(columns_colors_data[dst1_idx].colors, columns_colors_data[src_idx].colors, sizeof(u32)*colors_to_copy);
+                memcpy(columns_colors_data[dst2_idx].colors, columns_colors_data[src_idx].colors, sizeof(u32)*colors_to_copy);
+                memcpy(columns_colors_data[dst3_idx].colors, columns_colors_data[src_idx].colors, sizeof(u32)*colors_to_copy);
+                memcpy(columns_colors_data[dst4_idx].colors, columns_colors_data[src_idx].colors, sizeof(u32)*colors_to_copy);
+                memcpy(columns_norm_data[dst1_idx].norm_pt1, columns_norm_data[src_idx].norm_pt1, sizeof(f32)*colors_to_copy);
+                memcpy(columns_norm_data[dst2_idx].norm_pt1, columns_norm_data[src_idx].norm_pt1, sizeof(f32)*colors_to_copy);
+                memcpy(columns_norm_data[dst3_idx].norm_pt1, columns_norm_data[src_idx].norm_pt1, sizeof(f32)*colors_to_copy);
+                memcpy(columns_norm_data[dst4_idx].norm_pt1, columns_norm_data[src_idx].norm_pt1, sizeof(f32)*colors_to_copy);
+                memcpy(columns_norm_data[dst1_idx].norm_pt2, columns_norm_data[src_idx].norm_pt2, sizeof(f32)*colors_to_copy);
+                memcpy(columns_norm_data[dst2_idx].norm_pt2, columns_norm_data[src_idx].norm_pt2, sizeof(f32)*colors_to_copy);
+                memcpy(columns_norm_data[dst3_idx].norm_pt2, columns_norm_data[src_idx].norm_pt2, sizeof(f32)*colors_to_copy);
+                memcpy(columns_norm_data[dst4_idx].norm_pt2, columns_norm_data[src_idx].norm_pt2, sizeof(f32)*colors_to_copy);
 
-                columns_runs_data[dst1_idx] = columns_runs_data[src_idx];
-                columns_runs_data[dst2_idx] = columns_runs_data[src_idx];
-                columns_runs_data[dst3_idx] = columns_runs_data[src_idx];
-                columns_runs_data[dst4_idx] = columns_runs_data[src_idx];
-
-                columns_norm_data[dst1_idx] = columns_norm_data[src_idx];
-                columns_norm_data[dst2_idx] = columns_norm_data[src_idx];
-                columns_norm_data[dst3_idx] = columns_norm_data[src_idx];
-                columns_norm_data[dst4_idx] = columns_norm_data[src_idx];
 
                 columns_bitmaps_data[dst1_idx] = columns_bitmaps_data[src_idx];
                 columns_bitmaps_data[dst2_idx] = columns_bitmaps_data[src_idx];
@@ -1630,8 +1566,15 @@ void load_map(s32 map_idx) {
                 columns_bitmaps_data[dst4_idx] = columns_bitmaps_data[src_idx];
             }
         }
+        
+        u32 double_end = SDL_GetTicks();
+        u32 double_dt_ms = (double_end - double_start);
+        printf("MAP DOUBLING TOOK %ums\n", double_dt_ms);
     
-
+        if(!rand_table_init) {
+            rand_table_init = 1;
+            init_rand_table();
+        }
         
         thread_params colors_parms[NUM_LIGHT_MAP_THREADS];
         for(int i = 0; i < NUM_LIGHT_MAP_THREADS; i++) {
@@ -1666,17 +1609,6 @@ void load_map(s32 map_idx) {
         light_map_size = 512;
     }
 
-    u32 bitmap_start = SDL_GetTicks();
-    // build bitmap cache (only 33MB, might as well keep it around)
-    for(int y = 0; y < MAP_Y_SIZE; y++) {
-        for(int x = 0; x < MAP_X_SIZE; x++) {
-            u32 idx = get_voxelmap_idx(x,y);
-            col_to_solid_bitmap(idx, &columns_bitmaps_data[idx]);
-        }
-    }
-    u32 bitmap_end = SDL_GetTicks();
-    u32 bitmap_dt_ms = (bitmap_end - bitmap_start);
-    printf("BITMAP CONSTRUCTION TOOK %ums\n", bitmap_dt_ms);
 
     int num_light_chunks_per_axis = light_map_size / LIGHT_CHUNK_SIZE;
     for(int y = 0; y < num_light_chunks_per_axis; y++) {
@@ -1687,7 +1619,11 @@ void load_map(s32 map_idx) {
         }
     }
 
+    u32 light_start = SDL_GetTicks();
     light_map(0, 0, LIGHT_CHUNK_SIZE, LIGHT_CHUNK_SIZE);
+    u32 light_end = SDL_GetTicks();
+    u32 light_dt_ms = (light_end - light_start);
+    printf("LIGHT MAP TOOK %ums\n", light_dt_ms);
 
     light_map_chunks[0].lit = 1;
     /*

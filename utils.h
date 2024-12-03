@@ -36,4 +36,8 @@ void* realloc_wrapper(void* p, size_t s, char* buf_name) {
     return realloc(p, s);
 }
 
+void free_wrapper(void* p, char* buf_name) {
+    printf("Freeing %s\n", buf_name);
+    free(p);
+}
 #endif
