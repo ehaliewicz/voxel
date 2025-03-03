@@ -1,6 +1,8 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+
+
 u16 u32abgr_to_u16(u32 color_val){
     u8 r = (color_val&0xFF)>>3;
     u8 g = ((color_val>>8)&0xFF)>>3;

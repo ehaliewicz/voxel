@@ -1,4 +1,5 @@
 #include "math.h"
+#include "types.h"
 
 typedef struct {
     float x,y;
@@ -14,7 +15,7 @@ typedef struct {
 
 typedef struct {
     float els[4][4];
-} float4x4;
+} mat44;
 
 
 typedef struct {
@@ -23,7 +24,7 @@ typedef struct {
     vector3 eulerAngles;
     vector3 forward;
     vector3 up;
-    float4x4 nonJitteredProjectionMatrix;
+    mat44 nonJitteredProjectionMatrix;
 } transform;
 
 
@@ -69,28 +70,26 @@ vector3 CalculateVanishingPointWorld (camera* cam) {
 }
 
 
-float4x4 mat4x4_mul_mat4x4(float4x4* src1, float4x4* src2) {
-    float4x4 dst;
-    dst.els[0][0] = src1->els[0][0] * src2->els[0][0] + src1->els[0][1] * src2->els[1][0] + src1->els[0][2] * src2->els[2][0] + src1->els[0][3] * src2->els[3][0]; 
-    dst.els[0][1] = src1->els[0][0] * src2->els[0][1] + src1->els[0][1] * src2->els[1][1] + src1->els[0][2] * src2->els[2][1] + src1->els[0][3] * src2->els[3][1]; 
-    dst.els[0][2] = src1->els[0][0] * src2->els[0][2] + src1->els[0][1] * src2->els[1][2] + src1->els[0][2] * src2->els[2][2] + src1->els[0][3] * src2->els[3][2]; 
-    dst.els[0][3] = src1->els[0][0] * src2->els[0][3] + src1->els[0][1] * src2->els[1][3] + src1->els[0][2] * src2->els[2][3] + src1->els[0][3] * src2->els[3][3]; 
-    dst.els[1][0] = src1->els[1][0] * src2->els[0][0] + src1->els[1][1] * src2->els[1][0] + src1->els[1][2] * src2->els[2][0] + src1->els[1][3] * src2->els[3][0]; 
-    dst.els[1][1] = src1->els[1][0] * src2->els[0][1] + src1->els[1][1] * src2->els[1][1] + src1->els[1][2] * src2->els[2][1] + src1->els[1][3] * src2->els[3][1]; 
-    dst.els[1][2] = src1->els[1][0] * src2->els[0][2] + src1->els[1][1] * src2->els[1][2] + src1->els[1][2] * src2->els[2][2] + src1->els[1][3] * src2->els[3][2]; 
-    dst.els[1][3] = src1->els[1][0] * src2->els[0][3] + src1->els[1][1] * src2->els[1][3] + src1->els[1][2] * src2->els[2][3] + src1->els[1][3] * src2->els[3][3]; 
-    dst.els[2][0] = src1->els[2][0] * src2->els[0][0] + src1->els[2][1] * src2->els[1][0] + src1->els[2][2] * src2->els[2][0] + src1->els[2][3] * src2->els[3][0]; 
-    dst.els[2][1] = src1->els[2][0] * src2->els[0][1] + src1->els[2][1] * src2->els[1][1] + src1->els[2][2] * src2->els[2][1] + src1->els[2][3] * src2->els[3][1]; 
-    dst.els[2][2] = src1->els[2][0] * src2->els[0][2] + src1->els[2][1] * src2->els[1][2] + src1->els[2][2] * src2->els[2][2] + src1->els[2][3] * src2->els[3][2]; 
-    dst.els[2][3] = src1->els[2][0] * src2->els[0][3] + src1->els[2][1] * src2->els[1][3] + src1->els[2][2] * src2->els[2][3] + src1->els[2][3] * src2->els[3][3]; 
-    dst.els[3][0] = src1->els[3][0] * src2->els[0][0] + src1->els[3][1] * src2->els[1][0] + src1->els[3][2] * src2->els[2][0] + src1->els[3][3] * src2->els[3][0]; 
-    dst.els[3][1] = src1->els[3][0] * src2->els[0][1] + src1->els[3][1] * src2->els[1][1] + src1->els[3][2] * src2->els[2][1] + src1->els[3][3] * src2->els[3][1]; 
-    dst.els[3][2] = src1->els[3][0] * src2->els[0][2] + src1->els[3][1] * src2->els[1][2] + src1->els[3][2] * src2->els[2][2] + src1->els[3][3] * src2->els[3][2]; 
-    dst.els[3][3] = src1->els[3][0] * src2->els[0][3] + src1->els[3][1] * src2->els[1][3] + src1->els[3][2] * src2->els[2][3] + src1->els[3][3] * src2->els[3][3]; 
-    return dst;
+void mat44_mul_mat44(mat44* src1, mat44* src2, mat44* dst) {
+    dst->els[0][0] = src1->els[0][0] * src2->els[0][0] + src1->els[0][1] * src2->els[1][0] + src1->els[0][2] * src2->els[2][0] + src1->els[0][3] * src2->els[3][0]; 
+    dst->els[0][1] = src1->els[0][0] * src2->els[0][1] + src1->els[0][1] * src2->els[1][1] + src1->els[0][2] * src2->els[2][1] + src1->els[0][3] * src2->els[3][1]; 
+    dst->els[0][2] = src1->els[0][0] * src2->els[0][2] + src1->els[0][1] * src2->els[1][2] + src1->els[0][2] * src2->els[2][2] + src1->els[0][3] * src2->els[3][2]; 
+    dst->els[0][3] = src1->els[0][0] * src2->els[0][3] + src1->els[0][1] * src2->els[1][3] + src1->els[0][2] * src2->els[2][3] + src1->els[0][3] * src2->els[3][3]; 
+    dst->els[1][0] = src1->els[1][0] * src2->els[0][0] + src1->els[1][1] * src2->els[1][0] + src1->els[1][2] * src2->els[2][0] + src1->els[1][3] * src2->els[3][0]; 
+    dst->els[1][1] = src1->els[1][0] * src2->els[0][1] + src1->els[1][1] * src2->els[1][1] + src1->els[1][2] * src2->els[2][1] + src1->els[1][3] * src2->els[3][1]; 
+    dst->els[1][2] = src1->els[1][0] * src2->els[0][2] + src1->els[1][1] * src2->els[1][2] + src1->els[1][2] * src2->els[2][2] + src1->els[1][3] * src2->els[3][2]; 
+    dst->els[1][3] = src1->els[1][0] * src2->els[0][3] + src1->els[1][1] * src2->els[1][3] + src1->els[1][2] * src2->els[2][3] + src1->els[1][3] * src2->els[3][3]; 
+    dst->els[2][0] = src1->els[2][0] * src2->els[0][0] + src1->els[2][1] * src2->els[1][0] + src1->els[2][2] * src2->els[2][0] + src1->els[2][3] * src2->els[3][0]; 
+    dst->els[2][1] = src1->els[2][0] * src2->els[0][1] + src1->els[2][1] * src2->els[1][1] + src1->els[2][2] * src2->els[2][1] + src1->els[2][3] * src2->els[3][1]; 
+    dst->els[2][2] = src1->els[2][0] * src2->els[0][2] + src1->els[2][1] * src2->els[1][2] + src1->els[2][2] * src2->els[2][2] + src1->els[2][3] * src2->els[3][2]; 
+    dst->els[2][3] = src1->els[2][0] * src2->els[0][3] + src1->els[2][1] * src2->els[1][3] + src1->els[2][2] * src2->els[2][3] + src1->els[2][3] * src2->els[3][3]; 
+    dst->els[3][0] = src1->els[3][0] * src2->els[0][0] + src1->els[3][1] * src2->els[1][0] + src1->els[3][2] * src2->els[2][0] + src1->els[3][3] * src2->els[3][0]; 
+    dst->els[3][1] = src1->els[3][0] * src2->els[0][1] + src1->els[3][1] * src2->els[1][1] + src1->els[3][2] * src2->els[2][1] + src1->els[3][3] * src2->els[3][1]; 
+    dst->els[3][2] = src1->els[3][0] * src2->els[0][2] + src1->els[3][1] * src2->els[1][2] + src1->els[3][2] * src2->els[2][2] + src1->els[3][3] * src2->els[3][2]; 
+    dst->els[3][3] = src1->els[3][0] * src2->els[0][3] + src1->els[3][1] * src2->els[1][3] + src1->els[3][2] * src2->els[2][3] + src1->els[3][3] * src2->els[3][3]; 
 }
 
-vector4 mat44_mult_vec4( float4x4* src_mat, vector4* src_vec) {
+vector4 mat44_mul_vec4( mat44* src_mat, vector4* src_vec) {
     vector4 res;
     res.x = src_mat->els[0][0] * src_vec->x + src_mat->els[1][0] * src_vec->y + src_mat->els[2][0] * src_vec->z + src_mat->els[3][0] * src_vec->w;
     res.y = src_mat->els[0][1] * src_vec->x + src_mat->els[1][1] * src_vec->y + src_mat->els[2][1] * src_vec->z + src_mat->els[3][1] * src_vec->w;
@@ -99,7 +98,7 @@ vector4 mat44_mult_vec4( float4x4* src_mat, vector4* src_vec) {
     return res;
 }
 
-/*
+
 void get_camera_mat44(f32 pitch_ang, f32 roll_ang, f32 yaw_ang, mat44* res) {
     f32 cp = cos(pitch_ang);
     f32 sp = sin(pitch_ang);
@@ -127,14 +126,13 @@ void get_camera_mat44(f32 pitch_ang, f32 roll_ang, f32 yaw_ang, mat44* res) {
         {0.0f, 0.0f, 1.0f, 0.0f},
         {0.0f, 0.0f, 0.0f, 1.0f}
     }};
-
     mat44 inter;
-    mat44_mult(&roll, &yaw, &inter);
-    mat44_mult(&inter, &pitch, res);
+    mat44_mul_mat44(&roll, &yaw, &inter);
+    mat44_mul_mat44(&inter, &pitch, res);
 }
-*/
 
-float4x4 mat4x4_look_at(vector3 src, vector3 dst, vector3 up) {
+/*
+mat44 mat4x4_look_at(vector3 src, vector3 dst, vector3 up) {
 
 }
 
@@ -149,14 +147,14 @@ vector2 project_vanishing_point_world_to_screen (camera cam, vector3 world_pos) 
     // set up a local space version instead
     //return ((float3)camera.WorldToScreenPoint(worldPos)).xy; < -precision issues
 
-    float4x4 lookMatrix = mat4x4_look_at(vec3_zero, cam.transform.forward, cam.transform.up);
-    float4x4 view_matrix = mat4x4_mul_mat4x4(mat4x4_scale(float3(1, 1, 1)), 
+    mat44 lookMatrix = mat4x4_look_at(vec3_zero, cam.transform.forward, cam.transform.up);
+    mat44 view_matrix = mat44_mul_mat44(mat44_scale(float3(1, 1, 1)), 
                                             inverse(lookMatrix)); // -1*z because unity
-    float4x4 local_to_screen_matrix = mat4x4_mul_mat4x4(&cam.non_jittered_projection_matrix, &view_matrix);
+    mat44 local_to_screen_matrix = mat44_mul_mat44(&cam.non_jittered_projection_matrix, &view_matrix);
 
     vector3 load_pos = vec3_sub(world_pos, cam.transform.position);
     vector4 load_pos4 = {.x=load_pos.x, .y=load_pos.y, .z=load_pos.z, .w=1.0f};
-    vector4 cam_pos = mat44_mult_vec4(&local_to_screen_matrix, &load_pos4);
+    vector4 cam_pos = mat44_mul_vec4(&local_to_screen_matrix, &load_pos4);
 
     vector2 screen = ((vector2){.x = cam_pos.x/cam_pos.w, .y = cam_pos.y/cam_pos.w});
 
@@ -179,3 +177,4 @@ void raycast_6dof(camera cam) {
     vector2 vanishingPointScreenSpace = project_vanishing_point_world_to_screen(cam, vanishingPointWorldSpace);
     //Profiler.EndSample();
 }
+*/

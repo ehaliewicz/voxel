@@ -53,20 +53,31 @@ Olivec_Canvas vc_render(double dt);
 
 // internal SDL texture
 static SDL_Texture *vc_sdl_texture = NULL;
+static SDL_Texture *vc_sdl_texture2 = NULL;
 static size_t vc_sdl_internal_width = 0;
 static size_t vc_sdl_internal_height = 0;
 static size_t vc_sdl_external_width = 0;
 static size_t vc_sdl_external_height = 0;
 
 static SDL_Window *window = NULL;
+static SDL_Window *window2 = NULL;
 static SDL_Renderer *renderer = NULL;
+static SDL_Renderer *renderer2 = NULL;
 
 static bool vc_sdl_resize_texture(SDL_Renderer *renderer, size_t new_width, size_t new_height) {
+    // quadrant 1
+    size_t quad1_width = new_width;
+    size_t quad1_height = new_height;
+
+    printf("resizing sdl framebuffer, in hardware, indirect texture is %i, %i\n", new_width, new_height);
+
     printf("resizing sdl framebuffer, in hardware, texture is %i, %i\n", new_width, new_height);
     if (vc_sdl_texture != NULL) SDL_DestroyTexture(vc_sdl_texture);
     vc_sdl_internal_width = new_width;
     vc_sdl_internal_height = new_height;
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
     vc_sdl_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, vc_sdl_internal_width, vc_sdl_internal_height);
+    //vc_sdl_texture2 = SDL_CreateTexture(renderer2, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, vc_sdl_internal_width, vc_sdl_internal_height);
     if (vc_sdl_texture == NULL) return false;
     return true;
 }
@@ -100,12 +111,16 @@ void handle_keyup(SDL_KeyboardEvent key);
 double start_dt = 100000000000000.0;
 
 int main(int argc, char** argv) {
-
+    if(argc > 1) {
+        printf("MAP %s\n", argv[1]);
+        init_map_to_load = argv[1];
+    }
     int result = 0;
     {
         if (SDL_Init(SDL_INIT_VIDEO) < 0) return_defer(1);
         
-        window = SDL_CreateWindow("Voxworld", 40, 40, OUTPUT_WIDTH, OUTPUT_HEIGHT, 0);//, SDL_WINDOW_MOUSE_CAPTURE);
+        //window2 = SDL_CreateWindow("Quadrant 1", 40, 40, OUTPUT_WIDTH, OUTPUT_HEIGHT, 0);
+        window = SDL_CreateWindow("Voxworld", 40, 40, OUTPUT_WIDTH, OUTPUT_HEIGHT, 0);
         
         //if(SDL_SetRelativeMouseMode(SDL_TRUE) == -1) {
         //    printf("wtf?!");
@@ -114,9 +129,12 @@ int main(int argc, char** argv) {
         //SDL_ShowCursor(0);
 
         if (window == NULL) return_defer(1);
+        //if (window2 == NULL) return_defer(1);
 
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);//SDL_RENDERER_PRESENTVSYNC);
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);//SDL_RENDERER_PRESENTVSYNC);
+        //renderer2 = SDL_CreateRenderer(window2, -1, SDL_RENDERER_ACCELERATED);//SDL_RENDERER_PRESENTVSYNC);
         if (renderer == NULL) return_defer(1);
+        //if (renderer2 == NULL) return_defer(1);
 
         //SDL_GL_SetSwapInterval(0);
         double prevticks = GetTicks(); //+ start_dt;
@@ -219,7 +237,7 @@ int main(int argc, char** argv) {
             }
 
             // Display the texture
-            if (SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0) < 0) return_defer(1);
+            //if (SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0) < 0) return_defer(1);
             //if (SDL_RenderClear(renderer) < 0) return_defer(1);
             if (SDL_RenderCopy(renderer, vc_sdl_texture, &window_rect, NULL) < 0) return_defer(1);
             SDL_RenderPresent(renderer);

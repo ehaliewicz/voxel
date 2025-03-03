@@ -1,0 +1,21 @@
+#ifndef CONFIG_H
+
+#define CONFIG_H
+
+#define MAX_MIP0_DIST 384.0f
+#define MAX_MIP1_DIST 1200.0f
+
+#define MAP_X_SIZE 1024
+#define MAP_Y_SIZE 1024
+#define MAP_Z_SIZE  128
+#define MIP_MAP_X_SIZE (MAP_X_SIZE/2)
+#define MIP_MAP_Y_SIZE (MAP_Y_SIZE/2)
+#define MIP_MAP_Z_SIZE (MAP_Z_SIZE/2)
+#define MIP2_MAP_X_SIZE (MIP_MAP_X_SIZE/2)
+#define MIP2_MAP_Y_SIZE (MIP_MAP_Y_SIZE/2)
+#define MIP2_MAP_Z_SIZE (MIP_MAP_Z_SIZE/2)
+
+#define CHUNK_SIZE 128
+#define CHUNKS_PER_AXIS (MAP_X_SIZE / CHUNK_SIZE)
+
+#endif

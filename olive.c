@@ -211,8 +211,8 @@ static char olivec_default_glyphs[128][OLIVEC_DEFAULT_FONT_HEIGHT][OLIVEC_DEFAUL
     },
     ['v'] = {
         {0, 0, 0 ,0 ,0},
-        {1, 0, 0 ,0 ,1},
-        {0, 1, 0, 1 ,0},
+        {1, 0, 0, 0 ,1},
+        {1, 0, 0, 0 ,1},
         {0, 1, 0, 1 ,0},
         {0, 1, 1, 1 ,0},
         {0, 0, 1 ,0 ,0},

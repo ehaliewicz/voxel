@@ -36,4 +36,12 @@ void load_map_table() {
   map_table_loaded = 1;
 }
 
+char buf[32];
+char* get_map_name(int map_idx) {
+  if(num_maps == 0) { printf("Add maps to /maps\n"); exit(1); }
+  while(map_idx >= num_maps) { map_idx -= num_maps; }
+  sprintf(buf, "./maps/%s", &map_name_table[map_idxs[map_idx]]);
+  return buf;
+}
+
 #endif
