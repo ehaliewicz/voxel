@@ -13,10 +13,10 @@ import numba
 
 # CONSTANTS 
 
-OUTPUT_WIDTH = 800
-OUTPUT_HEIGHT = 800 #800
-RENDER_WIDTH = OUTPUT_WIDTH//3
-RENDER_HEIGHT = OUTPUT_HEIGHT//3
+OUTPUT_WIDTH = 1280
+OUTPUT_HEIGHT = 720 #800
+RENDER_WIDTH = OUTPUT_WIDTH//2
+RENDER_HEIGHT = OUTPUT_HEIGHT//2
 
 
 FULL_CIRCLE = 2.0 * math.pi        # 360 degrees
@@ -60,17 +60,6 @@ type int2 = tuple[int, int]
 type int4 = tuple[int, int, int, int]
 type float4x4 = tuple[float4, float4, float4, float4]
 
-
-@dataclass
-class DDARay():
-    position: int2
-    step: int2
-    start: float2
-    dir: float2
-    t_delta: float2
-    t_max: float2
-    intersection_distances: float2
-
 @dataclass
 class Segment:
     index: int
@@ -90,41 +79,87 @@ class SegmentContext:
     segment_ray_index_offset: int
     seen_pixel_cache_length: int
 
-@dataclass
-class RaySegmentContext:
-    context: SegmentContext
-    plane_ray_index: int
-
-@dataclass
-class RayDDAContext:
-    context: SegmentContext
-    plane_ray_index: int
-    dda_ray: DDARay
-
-
-@dataclass
-class RayContinuation:
-    context: SegmentContext
-    dda_ray: DDARay
-    plane_ray_index: int
-    ray_column: np.ndarray[typing.Any, np.dtype[np.uint32]]
-    lod: int
-
-def cmax(f: pyglet.math.Vec2) -> float:
-    return max(f.x, f.y)
-
-def cmin(f: pyglet.math.Vec2) -> float:
-    return min(f.x, f.y)
 
 def clamp(a,mi,ma):
     return min(max(a,mi), ma)
 
 
-def frac(f2: pyglet.math.Vec2) -> pyglet.math.Vec2:
-    return f2 - f2.__floor__()
+
+# MATH UTILITIES FOR VECTORS 
+
+@numba.njit
+def cmax2(f: float2) -> float:
+    return max(f[0], f[1])
+
+@numba.njit
+def cmin2(f: float2) -> float:
+    return min(f[0], f[1])
+
+@numba.njit
+def lerp3(a:float3,b:float3,f:float):
+    #a + (b-a) * f
+    return add3(a, scale3(sub3(b,a), f))
+
+@numba.njit
+def lerp(a:float,b:float,f:float):
+    return (a+((b-a)*f))
 
 
+@numba.njit
+def lerp2(a:float2,b:float2,f:float):
+    return add2(a, scale2(sub2(b,a), f))
 
+@numba.njit
+def scale3(a:float3,f:float):
+    return (a[0]*f,a[1]*f,a[2]*f)
+
+@numba.njit
+def scale2(a:float2,f:float):
+    return (a[0]*f,a[1]*f)
+
+@numba.njit
+def mul2(a:float2,b:float2):
+    return (a[0]*b[0], a[1]*b[1])
+
+@numba.njit
+def div2(a:float2,b:float2):
+    return (a[0]/b[0], a[1]/b[1])
+
+@numba.njit
+def offset2(a:float2,f:float):
+    return (a[0]+f,a[1]+f)
+
+@numba.njit
+def offset3(a:float3,f:float):
+    return (a[0]+f,a[1]+f,a[2]+f)
+
+@numba.njit
+def add3(a:float3,b:float3):
+    return (a[0]+b[0],a[1]+b[1],a[2]+b[2])
+
+@numba.njit
+def add2(a:float2,b:float2):
+    return (a[0]+b[0],a[1]+b[1])
+
+@numba.njit
+def neg2(a:float2):
+    return (-a[0],-a[1])
+
+@numba.njit
+def sub3(a:float3,b:float3):
+    return (a[0]-b[0],a[1]-b[1],a[2]-b[2])
+
+@numba.njit
+def sub2(a:float2,b:float2):
+    return (a[0]-b[0], a[1]-b[1],)
+
+
+@numba.njit
+def frac2(f2: float2) -> float2:
+    return sub2(f2, (math.floor(f2[0]), math.floor(f2[1])))
+
+
+@numba.njit
 def sign(x):
     if x >= 0:
         return 1
@@ -249,7 +284,7 @@ float44 = tuple[
     float,float,float,float
 ]
 
-#@numba.njit(forceinline=True)
+@numba.njit(forceinline=True)
 def matmult(mat: float44, vec: float4):
     x, y, z, w = vec
     # extract the elements in row-column form. (matrix is stored column first)
@@ -261,21 +296,22 @@ def matmult(mat: float44, vec: float4):
         x * a14 + y * a24 + z * a34 + w * a44,
     )
 
-#@numba.njit()
+
+@numba.njit()
 def setup_projected_plane_params(
-        world_to_screen_mat: pyglet.math.Mat4,
+        world_to_screen_mat: float44,
         ray_start: float2,
         ray_dir: float2,
         world_max_y: float,
         #voxel_scale: int,
         y_axis: int) -> typing.Tuple[float3, float3, float3]:
-    plane_start_bottom = pyglet.math.Vec4(ray_start[0], 0.0, ray_start[1], 1)
-    plane_start_top = pyglet.math.Vec4(ray_start[0], world_max_y, ray_start[1], 1)
-    plane_ray_direction = pyglet.math.Vec4(ray_dir[0], 0.0, ray_dir[1], 0)
+    plane_start_bottom = (ray_start[0], 0.0, ray_start[1], 1)
+    plane_start_top = (ray_start[0], world_max_y, ray_start[1], 1)
+    plane_ray_direction = (ray_dir[0], 0.0, ray_dir[1], 0)
 
-    full_plane_start_top_projected = (world_to_screen_mat @ plane_start_top)
-    full_plane_start_bot_projected = (world_to_screen_mat @ plane_start_bottom)
-    full_plane_ray_direction_projected = (world_to_screen_mat @ plane_ray_direction)
+    full_plane_start_top_projected = matmult(world_to_screen_mat, plane_start_top)
+    full_plane_start_bot_projected = matmult(world_to_screen_mat, plane_start_bottom)
+    full_plane_ray_direction_projected = matmult(world_to_screen_mat, plane_ray_direction)
     if y_axis == 0:
         return (
              (full_plane_start_bot_projected[0], full_plane_start_bot_projected[2], full_plane_start_bot_projected[3]),
@@ -289,61 +325,6 @@ def setup_projected_plane_params(
              (full_plane_ray_direction_projected[1], full_plane_ray_direction_projected[2], full_plane_ray_direction_projected[3])
         )
 
-# MATH UTILITIES FOR VECTORS 
-
-@numba.njit
-def lerp3(a:float3,b:float3,f:float):
-    #a + (b-a) * f
-    return add3(a, scale3(sub3(b,a), f))
-
-@numba.njit
-def lerp(a:float,b:float,f:float):
-    return (a+((b-a)*f))
-
-
-@numba.njit
-def lerp2(a:float2,b:float2,f:float):
-    return add2(a, scale2(sub2(b,a), f))
-
-@numba.njit
-def scale3(a:float3,f:float):
-    return (a[0]*f,a[1]*f,a[2]*f)
-
-@numba.njit
-def scale2(a:float2,f:float):
-    return (a[0]*f,a[1]*f)
-
-@numba.njit
-def mul2(a:float2,b:float2):
-    return (a[0]*b[0], a[1]*b[1])
-
-@numba.njit
-def div2(a:float2,b:float2):
-    return (a[0]/b[0], a[1]/b[1])
-
-@numba.njit
-def offset2(a:float2,f:float):
-    return (a[0]+f,a[1]+f)
-
-@numba.njit
-def offset3(a:float3,f:float):
-    return (a[0]+f,a[1]+f,a[2]+f)
-
-@numba.njit
-def add3(a:float3,b:float3):
-    return (a[0]+b[0],a[1]+b[1],a[2]+b[2])
-
-@numba.njit
-def add2(a:float2,b:float2):
-    return (a[0]+b[0],a[1]+b[1])
-
-@numba.njit
-def sub3(a:float3,b:float3):
-    return (a[0]-b[0],a[1]-b[1],a[2]-b[2])
-
-@numba.njit
-def sub2(a:float2,b:float2):
-    return (a[0]-b[0], a[1]-b[1],)
 
 @numba.njit
 def clip_homogeneous_camera_space_line(a: float3, b: float3) -> tuple[bool, float2, float2]:
@@ -392,101 +373,8 @@ def draw_skybox(next_free_pix_min, next_free_pix_max, seen_pixel_cache, pix_arr,
             pix_arr[ray_column_off, y] = skybox_col
 
 def color_to_int(color: pygame.Color) -> int:
-    return (color.b | (color.g<<8) | (color.r<<16) | (color.a<<24))
+    return (color.r | (color.g<<8) | (color.b<<16) | (color.a<<24))
 
-@numba.njit
-def color_tuple_to_int(color: int4) -> int:
-    (r,g,b,a) = color
-    return (b | (g<<8) | (r<<16) | (a<<24))
-
-
-#@numba.njit(parallel=False)
-def execute_rays(
-    total_rays: int, 
-    camera: Camera, 
-    ray_continuations: typing.List[RayContinuation],
-    height_map: np.ndarray[typing.Any, np.dtype[np.uint16]], 
-    color_map: np.ndarray[typing.Any, np.dtype[np.uint32]],
-    full_seen_pixel_cache: np.ndarray[(typing.Any, typing.Any), np.dtype[np.uint8]]
-):
-    
-
-    #(far_clip, world_to_screen_mat, cam_pos_y, cam_inv, dims) = camera
-    far_clip = camera.far_clip
-
-    # these are used to track which pixels have been filled while raycasting
-    # NOTE: for regular heightmaps, these are not strictly required
-    # but since we want to (eventually) support arbitrary voxel data per column
-    # these are necessary
-
-    # here generate fixed sized caches, one of each size of the camera dimensions,
-    # before iterating over rays
-    # whichever cache is used will be re-filled with zeros after each ray is executed
-    #far_clip = camera.far_clip
-    voxel_scale = 1
-
-    world_max_y = WORLD_MAX_Y
-    one_over_world_max_y = 1/world_max_y 
-    
-    #world_to_screen_mat = camera.get_world_to_screen_matrix()
-    camera_pos_y_normalized = camera.pos.y / world_max_y
-    #cam_inv = camera.inverse_element_iteration_direction
-    #seen_pixel_caches[0].fill(0)
-    #seen_pixel_caches[1].fill(0)
-
-
-    
-    for i in range(total_rays):
-        ray_cont = ray_continuations[i]
-        #ray = ray_cont.dda_ray
-        #(dda_ray, axis_mapped_to_y, original_next_free_pix_min, original_next_free_pix_max, pix_arr, column) = ray_cont
-
-
-        #(ray_position, ray_step, ray_start, ray_dir, ray_t_delta, ray_t_max, ray_intersection_distances) = dda_ray
-        ray = ray_cont.dda_ray
-        seen_pixel_cache = full_seen_pixel_cache[i]
-        #seen_pixel_cache = seen_pixel_caches[ray_cont.context.axis_mapped_to_y]
-        #seen_pixel_cache.fill(0)
-        #for i in range(len(seen_pixel_cache)):
-        #    seen_pixel_cache[i] = 0
-
-
-        # small offset to the frustums to prevent a division by zero in the clipping algorithm
-        #frustum_bounds_min = cur_next_free_pix_min - .501
-        #frustum_bounds_max = cur_next_free_pix_max + .501
-        (plane_start_bottom_projected,
-        plane_start_top_projected,
-        plane_ray_direction_projected) = setup_projected_plane_params(
-            camera.get_world_to_screen_matrix(), 
-            ray.start, ray.dir,
-            world_max_y, 
-            #voxel_scale, 
-            ray_cont.context.axis_mapped_to_y
-        )
-
-        intersection_distances_x, intersection_distances_y = ray.intersection_distances
-
-        step_x, step_y = ray.step
-        t_delta_x, t_delta_y = ray.t_delta
-        t_max_x, t_max_y = ray.t_max
-        position_x,position_y = ray.position
-        
-        original_next_free_pix_min = ray_cont.context.original_next_free_pixel_min
-        original_next_free_pix_max = ray_cont.context.original_next_free_pixel_max
-        ray = ((intersection_distances_x, intersection_distances_y),
-               (t_max_x, t_max_y),
-               (t_delta_x, t_delta_y),
-               (position_x, position_y),
-               (step_x, step_y))
-        # (intersection_distances: float2, t_max: float2, t_delta: float2, position: int2, step: int2)
-
-        ray_loop(far_clip, world_max_y, height_map, color_map,
-                 plane_start_bottom_projected, plane_start_top_projected, plane_ray_direction_projected,
-                 one_over_world_max_y, seen_pixel_cache, 
-                 ray_cont.context.ray_buffer, ray_cont.ray_column,
-                 original_next_free_pix_min, original_next_free_pix_max,
-                 ray, camera_pos_y_normalized)
-        
 
 @numba.njit(forceinline=True)
 def fill_raybuffer_col(cam_space_top: float2, cam_space_bot: float2,
@@ -551,7 +439,7 @@ def fill_raybuffer_col(cam_space_top: float2, cam_space_bot: float2,
 RayTuple = tuple[float2, float2, float2, int2, int2]
 
 # returns a new ray tuple, plus the remaining x and y steps
-@numba.njit
+@numba.njit(forceinline=True)
 def step_ray(ray: RayTuple, rem_x_steps: int, rem_y_steps: int) -> tuple[RayTuple, int, int]:
     (intersection_distances, t_max, t_delta, position, step) = ray
     if t_max[0] < t_max[1]:
@@ -850,13 +738,6 @@ def step(edge, x):
     if x < edge:
         return 0.0
     return 1.0
-
-seg_cols = [
-    color_to_int(pygame.Color(0xFF,0,0,0xFF)),
-    color_to_int(pygame.Color(0,0xFF,0,0xFF)),
-    color_to_int(pygame.Color(0,0,0xFF,0xFF)),
-    color_to_int(pygame.Color(0xFF,0xFF,0xFF,0xFF))
-]
 
 
 def normalize_radians(f):
@@ -1197,98 +1078,131 @@ def get_segment_parameters(segment_index: int, camera: Camera,
     return segment
 
 
-# map each ray to it's parent segment
-def setup_ray_segment_mapping(total_rays, segmentContexts: typing.List[SegmentContext]) -> typing.List[RaySegmentContext]:
-    rays: typing.List[RaySegmentContext] = []
-    for i in range(total_rays):
-        plane_index = i
-        for j in range(4):
-            segment_rays = segmentContexts[j].segment.ray_count
-            if segment_rays <= 0:
-                continue
-            if plane_index >= segment_rays:
-                plane_index -= segment_rays
-                continue
-                    
-            rays.append(
-                RaySegmentContext(context=segmentContexts[j], plane_ray_index=plane_index)
-            )
-            break
-    return rays
-
-
 # calculate DDA information for a given start position and direction
-def make_ray(start: pyglet.math.Vec2, dir: pyglet.math.Vec2) -> DDARay:
-    position = [math.floor(start.x), math.floor(start.y)]
+@numba.njit
+def make_ray(start, dir) -> tuple:
+    position = (math.floor(start[0]), math.floor(start[1]))
     eps = .0000001
-    absDir = dir.__abs__()
-    t_delta = 1 / pyglet.math.Vec2(max(eps, absDir.x), max(eps, absDir.y))
+    absDir = (abs(dir[0]), abs(dir[1]))
+    t_delta = (1 / max(eps, absDir[0]), 1 / max(eps, absDir[1]))
 
-    sign_dir = pyglet.math.Vec2(sign(dir.x), sign(dir.y))
-    step = pyglet.math.Vec2(int(sign_dir.x), int(sign_dir.y))
-    t_max_vec = ((sign_dir * -frac(start)) + (sign_dir * 0.5) + 0.5) * t_delta
-    t_max = pyglet.math.Vec2(t_max_vec.x, t_max_vec.y)
-    intersection_distances = pyglet.math.Vec2(cmax(t_max - t_delta), cmin(t_max))
-    return DDARay(position=position, step=step, start=start, dir=dir, t_delta=t_delta, t_max=t_max, intersection_distances=intersection_distances)
+    sign_dir = (sign(dir[0]), sign(dir[1]))
+    step = (int(sign_dir[0]), int(sign_dir[1]))
 
+    t_max = mul2(t_delta, 
+                   offset2(
+                        add2(mul2(sign_dir, neg2(frac2(start))),
+                                scale2(sign_dir,  0.5)),
+                        0.5)) # * t_delta
 
-# stash stuff here for debugging
-segment_start_end_rays  = None
-
-
-# sets up the DDA details for each ray
-def setup_ray_dda_contexts(total_rays: int, camera: Camera, ray_segment_contexts: typing.List[RaySegmentContext]) -> typing.List[RayDDAContext]:
-    res: typing.List[RayDDAContext] = []
-    global segment_start_end_rays
-
-    segment_start_end_rays = [
-        [None,None],
-        [None,None],
-        [None,None],
-        [None,None]
-    ]
-
-    for i in range(total_rays):
-        ctx = ray_segment_contexts[i].context
-        segment = ctx.segment
-        segment_idx = segment.index
-        end_ray_lerp = ray_segment_contexts[i].plane_ray_index / segment.ray_count
-        
-        cam_local_plane_ray_direction = pyglet.math.Vec2.lerp(
-            segment.cam_local_plane_ray_min, segment.cam_local_plane_ray_max, end_ray_lerp
-        )
-        
-        norm_ray_dir = cam_local_plane_ray_direction.normalize()
-        ray = make_ray(pyglet.math.Vec2(camera.pos.x, camera.pos.z), norm_ray_dir)
-
-        res.append(RayDDAContext(
-            context=ctx, plane_ray_index=ray_segment_contexts[i].plane_ray_index,
-            dda_ray=ray
-        ))
+    intersection_distances = (cmax2(sub2(t_max, t_delta)), cmin2(t_max))
+    return (
+        position, 
+        step, start, 
+        dir, 
+        t_delta, 
+        t_max, 
+        intersection_distances
+    )
 
 
-    return res
+@numba.njit
+def len2(vec):
+    """ Calculate the norm of a 3d vector. """
+    return math.sqrt(vec[0]*vec[0] + vec[1]*vec[1])
+
+@numba.njit
+def normalize2(vec, result):
+    norm_ = len2(vec)
+    if norm_ < 1e-6:
+        result[0] = 0.
+        result[1] = 0.
+    else:
+        result[0] = vec[0] / norm_
+        result[1] = vec[1] / norm_
 
 # sets up the remaining information for each ray
-def setup_ray_continuations(total_rays: int, ray_dda_contexts: typing.List[RayDDAContext]) -> typing.List[RayContinuation]:
-    res: typing.List[RayContinuation] = []
-    for i in range(total_rays):
-        ray_context = ray_dda_contexts[i]
-        segment_context = ray_context.context
-        segment_idx = segment_context.segment.index
-        total_index = ray_context.plane_ray_index + segment_context.segment_ray_index_offset
-        cont = RayContinuation(
-            context=ray_context.context,
-            dda_ray=ray_context.dda_ray,
-            plane_ray_index=ray_context.plane_ray_index,
-            ray_column=total_index, #, segment_context.ray_buffer[total_index]),
-            lod=0
+@numba.njit(parallel=True)
+def execute_rays_in_segment(
+    rays_in_segment: int,
+    ray_buffer_base_offset: int,
+    overall_ray_offset: int,
+    cam_local_plane_ray_min: float2,
+    cam_local_plane_ray_max: float2,
+    axis_mapped_to_y: int,
+    original_next_free_pix_min: int,
+    original_next_free_pix_max: int,
+    world_to_screen_mat: float44,
+    camera_position: float3,
+    far_clip: float,
+    height_map: np.ndarray[typing.Any, np.dtype[np.uint16]], 
+    color_map: np.ndarray[typing.Any, np.dtype[np.uint32]],
+    full_seen_pixel_cache: np.ndarray[(typing.Any, typing.Any), np.dtype[np.uint8]],
+    ray_buffer: np.ndarray[(typing.Any, typing.Any), np.dtype[np.uint32]]
+):
+    
+    voxel_scale = 1
+
+    world_max_y = WORLD_MAX_Y
+    one_over_world_max_y = 1/world_max_y 
+    camera_pos_y_normalized = camera_position.y / world_max_y
+
+    for ray_in_segment_idx in numba.prange(rays_in_segment):
+
+        end_ray_lerp = ray_in_segment_idx / rays_in_segment
+        
+        cam_local_plane_ray_direction = lerp2(cam_local_plane_ray_min, cam_local_plane_ray_max, end_ray_lerp)
+        #cam_local_plane_ray_direction = pyglet.math.Vec2.lerp(
+        #    cam_local_plane_ray_min, cam_local_plane_ray_max, end_ray_lerp
+        #)
+        norm_ray_dir = np.zeros(2)
+        normalize2(cam_local_plane_ray_direction, norm_ray_dir) #cam_local_plane_ray_direction.normalize()
+        (ray_position, ray_step, ray_start,
+         ray_dir, ray_t_delta, ray_t_max, ray_intersection_distances
+        ) = make_ray(
+            np.array([camera_position.x, camera_position.z]),
+            norm_ray_dir)
+
+        ray_column = ray_in_segment_idx + ray_buffer_base_offset
+
+        seen_pixel_cache = full_seen_pixel_cache[overall_ray_offset + ray_in_segment_idx]
+
+
+        # small offset to the frustums to prevent a division by zero in the clipping algorithm
+        #frustum_bounds_min = cur_next_free_pix_min - .501
+        #frustum_bounds_max = cur_next_free_pix_max + .501
+        (plane_start_bottom_projected,
+        plane_start_top_projected,
+        plane_ray_direction_projected) = setup_projected_plane_params(
+            world_to_screen_mat,
+            ray_start, ray_dir,
+            world_max_y, 
+            axis_mapped_to_y
         )
-        res.append(cont)
-        #if segment_start_end_rays[segment_idx][0] is None:
-        #    segment_start_end_rays[segment_idx][0] = cont
-        #segment_start_end_rays[segment_idx][1] = cont
-    return res
+
+        #intersection_distances_x, intersection_distances_y = ray.intersection_distances
+
+        #step_x, step_y = ray.step
+        #t_delta_x, t_delta_y = ray.t_delta
+        #t_max_x, t_max_y = ray.t_max
+        #position_x,position_y = ray.position
+        
+        #original_next_free_pix_min = original_next_free_pixel_min
+        #original_next_free_pix_max = .original_next_free_pixel_max
+        ray = (ray_intersection_distances,
+               ray_t_max,
+               ray_t_delta,
+               ray_position,
+               ray_step)
+        # (intersection_distances: float2, t_max: float2, t_delta: float2, position: int2, step: int2)
+
+        ray_loop(far_clip, world_max_y, height_map, color_map,
+                 plane_start_bottom_projected, plane_start_top_projected, plane_ray_direction_projected,
+                 one_over_world_max_y, seen_pixel_cache, 
+                 ray_buffer, ray_column,
+                 original_next_free_pix_min, original_next_free_pix_max,
+                 ray, camera_pos_y_normalized)
+    #return res
 
 
 
@@ -1325,25 +1239,29 @@ def raycast_segments(
         )
     ]
 
-    #total_rays = 0
-
     top_down_pix_arr.fill(color_to_int(skybox_col))
     left_right_pix_arr.fill(color_to_int(skybox_col))
     
-    #seen_pixel_caches = [
-    #    np.zeros([camera.dims[0]], dtype=np.uint8),
-    #    np.zeros([camera.dims[1]], dtype=np.uint8)
-    #]
+    #
+    total_rays = sum([s.ray_count for s in segments])
 
-    #world_to_screen_mat = camera.get_world_to_screen_matrix()
-    #a11, a12, a13, a14, a21, a22, a23, a24, a31, a32, a33, a34, a41, a42, a43, a44 = world_to_screen_mat
-    #world_to_screen_mat44: float44 = (a11, a12, a13, a14, a21, a22, a23, a24, a31, a32, a33, a34, a41, a42, a43, a44)
+    max_screen_dim = max(camera.dims)
+    total_bytes_per_column = math.ceil(max_screen_dim / 8)
+    aligned_bytes_per_column = 1 << (total_bytes_per_column.bit_length())
+    full_seen_pixel_cache = np.zeros([total_rays, aligned_bytes_per_column], dtype=np.uint8) 
 
-    total_rays = 0
+    mat = camera.get_world_to_screen_matrix()
+    world_to_screen_mat = (
+        mat.a,mat.b,mat.c,mat.d,
+        mat.e,mat.f,mat.g,mat.h,
+        mat.i,mat.j,mat.k,mat.l,
+        mat.m,mat.n,mat.o,mat.p
+    )
 
+    overall_ray_offset = 0
     for segment_index in range(4):
-        total_rays += segments[segment_index].ray_count
-        if segments[segment_index].ray_count == 0:
+        segment = segments[segment_index]
+        if segment.ray_count == 0:
             continue
 
         segment_ray_index_offset = 0
@@ -1354,51 +1272,33 @@ def raycast_segments(
         
         # 0,1 are mapped to y, 2,3 are mapped to x
         axis_mapped_to_y = 0 if segment_index > 1 else 1
-        seen_pixel_cache_length = camera.dims[axis_mapped_to_y]
 
         screen_width, screen_height = camera.dims.x, camera.dims.y
         if segment_index < 2:
             pix_arr = top_down_pix_arr
             if segment_index == 0:
-                next_free_pixel = pyglet.math.Vec2(pyglet.math.clamp(round(vp_y), 0, screen_width-1), screen_height-1)
+                next_free_pixel_min = pyglet.math.clamp(round(vp_y), 0, screen_width-1)
+                next_free_pixel_max = screen_height-1
             else:
-                next_free_pixel = pyglet.math.Vec2(0, pyglet.math.clamp(round(vp_y), 0, screen_height-1))
+                next_free_pixel_min = 0
+                next_free_pixel_max = pyglet.math.clamp(round(vp_y), 0, screen_height-1)
         else:
             pix_arr = left_right_pix_arr
             if segment_index == 3:
-                next_free_pixel = pyglet.math.Vec2(0, clamp(round(vp_x), 0, screen_width-1))
+                next_free_pixel_min = 0
+                next_free_pixel_max = clamp(round(vp_x), 0, screen_width-1)
             else:
-                next_free_pixel = pyglet.math.Vec2(clamp(round(vp_x), 0, camera.dims.x-1), screen_width-1)
+                next_free_pixel_min = clamp(round(vp_x), 0, camera.dims.x-1)
+                next_free_pixel_max = screen_width-1
         
-
-        segment_contexts[segment_index] = SegmentContext(
-            ray_buffer=pix_arr, segment=segments[segment_index],
-            original_next_free_pixel_min=next_free_pixel.x, original_next_free_pixel_max=next_free_pixel.y,
-            axis_mapped_to_y=axis_mapped_to_y,
-            segment_ray_index_offset=segment_ray_index_offset,
-            seen_pixel_cache_length=seen_pixel_cache_length
-        )
-    
-    # just make a buffer that's NUM_TOTAL_RAYS * max screen dimention honestly
-    max_screen_dim = max(camera.dims)
-    total_bytes_per_column = math.ceil(max_screen_dim / 8)
-    aligned_bytes_per_column = 1 << (total_bytes_per_column.bit_length())
-
-    #full_seen_pixel_cache = np.zeros([total_rays, max_screen_dim], dtype=np.uint8) 
-    full_seen_pixel_cache = np.zeros([total_rays, aligned_bytes_per_column], dtype=np.uint8) 
-    #print(f"Allocating {total_rays*aligned_bytes_per_column} bytes for pixel coverage bitmap")
-
-    #ray_segment_contexts = setup_ray_segment_mapping(total_rays, segment_contexts)
-    #ray_dda_contexts = setup_ray_dda_contexts(total_rays, camera, ray_segment_contexts)
-
-
-    ray_segment_contexts = setup_ray_segment_mapping(total_rays, segment_contexts)
-    ray_dda_contexts = setup_ray_dda_contexts(total_rays, camera, ray_segment_contexts)
-    ray_continuations = setup_ray_continuations(total_rays, ray_dda_contexts)
-
-        
-    execute_rays(total_rays, camera, ray_continuations, heights, colors, full_seen_pixel_cache)
-    return segment_contexts
+        execute_rays_in_segment(
+            segment.ray_count, segment_ray_index_offset, overall_ray_offset, 
+            (segment.cam_local_plane_ray_min[0], segment.cam_local_plane_ray_min[1]),
+            (segment.cam_local_plane_ray_max[0], segment.cam_local_plane_ray_max[1]), 
+            axis_mapped_to_y, next_free_pixel_min, next_free_pixel_max,
+            world_to_screen_mat, camera.pos, camera.far_clip,
+            heights, colors, full_seen_pixel_cache, pix_arr)
+        overall_ray_offset += segment.ray_count
 
 
 
@@ -1427,9 +1327,21 @@ class Texture:
     def __init__(self, image: pygame.Surface, ctx: moderngl.Context) -> None:
         image = pygame.transform.flip(image, False, True)
         self.image_width, self.image_height = image.get_rect().size
-        img_data = pygame.image.tostring(image, "RGBA")
+        img_data = pygame.image.tobytes(image, "RGBA")
         self.texture = ctx.texture(size=image.get_size(), components=4, data=img_data)
         self.texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+
+
+    def update_from_bytes(self, img_data: bytes, viewport: tuple[int, int, int, int]) -> None:
+        """
+        Writes the contents of the pygame Surface to OpenGL texture. 
+        """
+        #pygame.surface
+        if viewport is not None:
+            self.texture.write(img_data, viewport=viewport)
+        else:
+            self.texture.write(img_data)
+
 
     def update(self, image: pygame.Surface, vflip: bool=False) -> None:
         """
@@ -1438,8 +1350,8 @@ class Texture:
         if vflip:
             image = pygame.transform.flip(image, False, True)
         image_width, image_height = image.get_rect().size
-        img_data = pygame.image.tostring(image, "RGBA")
-
+        #pygame.surface
+        img_data = pygame.image.tobytes(image, "RGBA")
         self.texture.write(img_data)
 
     def use(self, _id: typing.Union[None, int] = None) -> None:
@@ -1479,15 +1391,15 @@ def load_map():
         color_pix = load_color_img(nmc) #"C1W.png") #"test_comanche_C.png")
         colors = np.array([color_to_int(x) for x in color_pix], dtype=np.uint32)
 
+@numba.njit
+def slice_and_transpose(np_arr: np.ndarray, dims):
+    d0start,d0end = dims
+    return np_arr[d0start:d0end].transpose()
+
+
 def main():
     global colors, heights
     load_map()
-
-    #color_pix = load_color_img("skyline_test.png") #"C1W.png") #"test_comanche_C.png")
-    #height_pix = load_grayscale_img("skyline_test.png") #"D1.png") #"test_comanche_D.png")
-
-    #colors = np.array([color_to_int(x) for x in color_pix]) 
-    #heights = np.array([x for x in height_pix], dtype=np.uint16)
 
     pygame.init()
     pygame.font.init()
@@ -1501,8 +1413,8 @@ def main():
 
     max_rays_left_right = 2*RENDER_WIDTH + RENDER_HEIGHT
     max_rays_up_down = RENDER_WIDTH + 2*RENDER_HEIGHT
-    left_right_draw_surf = pygame.Surface((max_rays_left_right, RENDER_WIDTH))
-    top_down_draw_surf = pygame.Surface((max_rays_up_down, RENDER_HEIGHT))
+    left_right_draw_surf = pygame.Surface((max_rays_left_right, RENDER_WIDTH), depth=32)
+    top_down_draw_surf = pygame.Surface((max_rays_up_down, RENDER_HEIGHT), depth=32)
 
     left_right_pix_arr = np.full([max_rays_left_right, RENDER_WIDTH], 
                                  color_to_int(skybox_col), dtype=np.uint32)
@@ -1535,11 +1447,6 @@ def main():
     seg01_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./seg01_frag.glsl")
     seg23_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./seg23_frag.glsl")
     ray_buffer_shader = create_vertfrag_shader(gl_ctx, "./default_vert.glsl", "./default_frag.glsl")
-
-    #seen_pixel_caches = [
-    #    np.zeros(camera.dims[0], dtype=np.uint8),
-    #    np.zeros(camera.dims[1], dtype=np.uint8)
-    #]
 
 
     while running:
@@ -1598,14 +1505,12 @@ def main():
                 camera, screen_vp, screen_vp.x, 
                 pyglet.math.Vec2(-1, 0), 0, WORLD_MAX_Y, left_right_draw_surf)
         
-        segment_contexts = raycast_segments(
+        raycast_segments(
             segments, screen_vp, camera,
             heights, colors, top_down_pix_arr, left_right_pix_arr,
         )
 
         
-        pygame.surfarray.blit_array(top_down_draw_surf, top_down_pix_arr)
-        pygame.surfarray.blit_array(left_right_draw_surf, left_right_pix_arr)
 
         vertices = [None for _ in range(12)]
         uvs = [None for _ in range(12)]
@@ -1632,18 +1537,19 @@ def main():
         # copy second column of the down segment (backwards quadrant)
         # to it's first column
         # this fixes a bug in the shader, where it seems to wrap around :/
-        if segments[1].ray_count > 0 and segments[0].ray_count > 0:
-            for y in range(top_down_draw_surf.get_height()):
-                #left_col_idx = max(0, segments[0].ray_count-1)
-                prev_pix = top_down_draw_surf.get_at(
-                    (segments[0].ray_count-1, y), 
-                )
-                if prev_pix == skybox_col:
-                    top_down_draw_surf.set_at(
-                        (segments[0].ray_count-1, y), 
-                        top_down_draw_surf.get_at((segments[0].ray_count, y))
-                        #pygame.Color(255,0,0,255)
-                    )
+        #if segments[1].ray_count > 0 and segments[0].ray_count > 0:
+        #    for y in range(top_down_draw_surf.get_height()):
+        #        #left_col_idx = max(0, segments[0].ray_count-1)
+        #        prev_pix = top_down_draw_surf.get_at(
+        #            (segments[0].ray_count-1, y), 
+        #        )
+        #        if prev_pix == skybox_col:
+        #            top_down_draw_surf.set_at(
+        #                (segments[0].ray_count-1, y), 
+        #                top_down_draw_surf.get_at((segments[0].ray_count, y))
+        #                #pygame.Color(255,0,0,255)
+        #            )
+
         offsets = [0.0, scales[0], 0.0, scales[2]]
         
         text_surf = my_font.render(
@@ -1652,16 +1558,30 @@ def main():
         )
 
 
-
-
         seg01_vf_shader['rayScales'] = scales
         seg01_vf_shader['rayOffsets'] = offsets
         seg23_vf_shader['rayScales'] = scales
         seg23_vf_shader['rayOffsets'] = offsets
 
         if RENDER_MODE == 0:
-            seg01_target_texture.update(top_down_draw_surf)
-            seg23_target_texture.update(left_right_draw_surf)
+
+            columns = segments[0].ray_count + segments[1].ray_count
+            height = top_down_draw_surf.get_height()
+
+            sliced_updated_td_portion = slice_and_transpose(top_down_pix_arr, [0, columns])
+            updated_td_bytes = sliced_updated_td_portion.tobytes()
+
+
+            seg01_target_texture.update_from_bytes(updated_td_bytes, [columns,height])
+
+
+            columns = segments[2].ray_count + segments[3].ray_count
+            height = left_right_draw_surf.get_height()
+            sliced_updated_lr_portion = slice_and_transpose(left_right_pix_arr, [0,columns])
+            updated_lr_bytes = sliced_updated_lr_portion.tobytes()
+
+            seg23_target_texture.update_from_bytes(updated_lr_bytes, [columns,height])
+            
             for shdr, base_vert_idx, texture in [
                 (seg01_vf_shader, 0, seg01_target_texture),
                 (seg01_vf_shader, 3, seg01_target_texture),
@@ -1692,6 +1612,8 @@ def main():
                 vao.render()
 
         else:
+            pygame.surfarray.blit_array(top_down_draw_surf, top_down_pix_arr)
+            pygame.surfarray.blit_array(left_right_draw_surf, left_right_pix_arr)
             vbo = gl_ctx.buffer(np.array([[-1,-1, 0, 0], # bottom left
                           [-1,1,0,1], # top left
                           [1,1,1,1], # top right
@@ -1704,16 +1626,18 @@ def main():
                 (vbo, '2f 2f', 'vertexPos', 'vertexTexCoord'),
             ])
             if RENDER_MODE == 1:
+                #pygame.surfarray.blit_array(top_down_draw_surf, top_down_pix_arr)
                 seg01_target_texture.update(top_down_draw_surf, vflip=True)
                 seg01_target_texture.use()
             else:
+                #pygame.surfarray.blit_array(left_right_draw_surf, left_right_pix_arr)
                 seg23_target_texture.update(left_right_draw_surf, vflip=True)
                 seg23_target_texture.use()
             vao.render()
         
         pygame.display.flip()
         print(f"fps: {fps}")
-        clock.tick(120)  # limits FPS to 60
+        clock.tick(200)  # limits FPS to 60
 
     pygame.quit()
 
