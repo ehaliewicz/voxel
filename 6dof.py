@@ -15,8 +15,8 @@ import numba
 
 OUTPUT_WIDTH = 800
 OUTPUT_HEIGHT = 800 #800
-RENDER_WIDTH = OUTPUT_WIDTH//4
-RENDER_HEIGHT = OUTPUT_HEIGHT//4
+RENDER_WIDTH = OUTPUT_WIDTH//3
+RENDER_HEIGHT = OUTPUT_HEIGHT//3
 
 
 FULL_CIRCLE = 2.0 * math.pi        # 360 degrees
@@ -365,6 +365,20 @@ def clip_homogeneous_camera_space_line(a: float3, b: float3) -> tuple[bool, floa
     else:
         return True, (ax,az),(bx,bz)
 
+@numba.njit
+def is_pixel_set(seen_pixel_cache: np.ndarray[typing.Any, np.uint8], y: int) -> int:
+    byte_idx = y >> 3
+    bit_idx = y & 0b111
+    return seen_pixel_cache[byte_idx] & (1<<bit_idx)
+    #return seen_pixel_cache[y] 
+
+@numba.njit
+def mark_pixel(seen_pixel_cache: np.ndarray[typing.Any, np.uint8], y: int):
+    byte_idx = y >> 3
+    bit_idx = y & 0b111
+    seen_pixel_cache[byte_idx] |= (1<<bit_idx)
+    
+    #seen_pixel_cache[y] = 1
 
 
 # unused!
@@ -374,7 +388,7 @@ skybox_col = pygame.Color(135,206,235,0xFF)
 def draw_skybox(next_free_pix_min, next_free_pix_max, seen_pixel_cache, pix_arr, ray_column_off):
     #pass
     for y in range(next_free_pix_min, next_free_pix_max):
-        if seen_pixel_cache[y] == 0:
+        if is_pixel_set(seen_pixel_cache, y) == 0: #seen_pixel_cache[y] == 0:
             pix_arr[ray_column_off, y] = skybox_col
 
 def color_to_int(color: pygame.Color) -> int:
@@ -393,7 +407,7 @@ def execute_rays(
     ray_continuations: typing.List[RayContinuation],
     height_map: np.ndarray[typing.Any, np.dtype[np.uint16]], 
     color_map: np.ndarray[typing.Any, np.dtype[np.uint32]],
-    seen_pixel_caches: typing.List[np.ndarray[typing.Any, np.dtype[np.uint8]]]
+    full_seen_pixel_cache: np.ndarray[(typing.Any, typing.Any), np.dtype[np.uint8]]
 ):
     
 
@@ -430,8 +444,9 @@ def execute_rays(
 
         #(ray_position, ray_step, ray_start, ray_dir, ray_t_delta, ray_t_max, ray_intersection_distances) = dda_ray
         ray = ray_cont.dda_ray
-        seen_pixel_cache = seen_pixel_caches[ray_cont.context.axis_mapped_to_y]
-        seen_pixel_cache.fill(0)
+        seen_pixel_cache = full_seen_pixel_cache[i]
+        #seen_pixel_cache = seen_pixel_caches[ray_cont.context.axis_mapped_to_y]
+        #seen_pixel_cache.fill(0)
         #for i in range(len(seen_pixel_cache)):
         #    seen_pixel_cache[i] = 0
 
@@ -503,7 +518,7 @@ def fill_raybuffer_col(cam_space_top: float2, cam_space_bot: float2,
         
             if ray_buffer_bounds_max >= cur_next_free_pix_min:
                 cur_next_free_pix_min = ray_buffer_bounds_max+1
-                while cur_next_free_pix_min <= original_next_free_pix_max and seen_pixel_cache[cur_next_free_pix_min] > 0:
+                while cur_next_free_pix_min <= original_next_free_pix_max and is_pixel_set(seen_pixel_cache, cur_next_free_pix_min) > 0: #seen_pixel_cache[cur_next_free_pix_min] > 0:
                     cur_next_free_pix_min += 1
 
         # if this visible chunk touches the bottom screen bound
@@ -513,7 +528,7 @@ def fill_raybuffer_col(cam_space_top: float2, cam_space_bot: float2,
             cur_next_free_pix_max = ray_buffer_bounds_min - 1
             if ray_buffer_bounds_min <= cur_next_free_pix_max:
                 cur_next_free_pix_max = ray_buffer_bounds_min-1
-                while cur_next_free_pix_max >= original_next_free_pix_min and seen_pixel_cache[cur_next_free_pix_max] > 0:
+                while cur_next_free_pix_max >= original_next_free_pix_min and is_pixel_set(seen_pixel_cache, cur_next_free_pix_max) > 0: #seen_pixel_cache[cur_next_free_pix_max] > 0:
                     cur_next_free_pix_max -= 1
 
 
@@ -521,8 +536,10 @@ def fill_raybuffer_col(cam_space_top: float2, cam_space_bot: float2,
         pix_arr_col = pix_arr[col]
         dy = len(pix_arr_col)-1
         for y in range(ray_buffer_bounds_min, ray_buffer_bounds_max+1):
-            if seen_pixel_cache[y] == 0:
-                seen_pixel_cache[y] = 1
+            if is_pixel_set(seen_pixel_cache, y) == 0: #seen_pixel_cache[y] == 0:
+                #seen_pixel_cache[y] = 1
+                mark_pixel(seen_pixel_cache, y)
+
                 pix_arr_col[dy-y] = color
 
     return cur_next_free_pix_min, cur_next_free_pix_max
@@ -850,11 +867,11 @@ def normalize_radians(f):
     return f
 
 RENDER_MODE = 0
+last_keys_down = set()
 import copy 
 
-copy_column = False 
-def handle_input(camera: Camera, keys_down, dt: float):
-    global RENDER_MODE
+def handle_input(camera: Camera, keys_down: set, dt: float):
+    global RENDER_MODE, last_keys_down
     views = [
         (
             pygame.K_KP_0, # looking forward
@@ -896,11 +913,8 @@ def handle_input(camera: Camera, keys_down, dt: float):
             break
 
     
-    global last_keys_down, copy_column
     if pygame.K_n in keys_down and pygame.K_n not in last_keys_down:
         load_map()
-    if pygame.K_f in keys_down and pygame.K_f not in last_keys_down:
-        copy_column = not copy_column 
     last_keys_down = copy.copy(keys_down)
 
     dpitch = 0
@@ -1280,7 +1294,7 @@ def setup_ray_continuations(total_rays: int, ray_dda_contexts: typing.List[RayDD
 
 def raycast_segments(
     segments, vanishing_point_screen_space, camera: Camera,
-    heights, colors: bool, top_down_pix_arr: np.ndarray, left_right_pix_arr: np.ndarray, seen_pixel_caches):
+    heights, colors: bool, top_down_pix_arr: np.ndarray, left_right_pix_arr: np.ndarray):
     
     vp_x, vp_y = vanishing_point_screen_space
 
@@ -1364,13 +1378,26 @@ def raycast_segments(
             segment_ray_index_offset=segment_ray_index_offset,
             seen_pixel_cache_length=seen_pixel_cache_length
         )
+    
+    # just make a buffer that's NUM_TOTAL_RAYS * max screen dimention honestly
+    max_screen_dim = max(camera.dims)
+    total_bytes_per_column = math.ceil(max_screen_dim / 8)
+    aligned_bytes_per_column = 1 << (total_bytes_per_column.bit_length())
+
+    #full_seen_pixel_cache = np.zeros([total_rays, max_screen_dim], dtype=np.uint8) 
+    full_seen_pixel_cache = np.zeros([total_rays, aligned_bytes_per_column], dtype=np.uint8) 
+    #print(f"Allocating {total_rays*aligned_bytes_per_column} bytes for pixel coverage bitmap")
+
+    #ray_segment_contexts = setup_ray_segment_mapping(total_rays, segment_contexts)
+    #ray_dda_contexts = setup_ray_dda_contexts(total_rays, camera, ray_segment_contexts)
+
 
     ray_segment_contexts = setup_ray_segment_mapping(total_rays, segment_contexts)
     ray_dda_contexts = setup_ray_dda_contexts(total_rays, camera, ray_segment_contexts)
     ray_continuations = setup_ray_continuations(total_rays, ray_dda_contexts)
 
         
-    execute_rays(total_rays, camera, ray_continuations, heights, colors, seen_pixel_caches)
+    execute_rays(total_rays, camera, ray_continuations, heights, colors, full_seen_pixel_cache)
     return segment_contexts
 
 
@@ -1509,10 +1536,10 @@ def main():
     seg23_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./seg23_frag.glsl")
     ray_buffer_shader = create_vertfrag_shader(gl_ctx, "./default_vert.glsl", "./default_frag.glsl")
 
-    seen_pixel_caches = [
-        np.zeros(camera.dims[0], dtype=np.uint8),
-        np.zeros(camera.dims[1], dtype=np.uint8)
-    ]
+    #seen_pixel_caches = [
+    #    np.zeros(camera.dims[0], dtype=np.uint8),
+    #    np.zeros(camera.dims[1], dtype=np.uint8)
+    #]
 
 
     while running:
@@ -1573,7 +1600,7 @@ def main():
         
         segment_contexts = raycast_segments(
             segments, screen_vp, camera,
-            heights, colors, top_down_pix_arr, left_right_pix_arr, seen_pixel_caches,
+            heights, colors, top_down_pix_arr, left_right_pix_arr,
         )
 
         
@@ -1605,8 +1632,9 @@ def main():
         # copy second column of the down segment (backwards quadrant)
         # to it's first column
         # this fixes a bug in the shader, where it seems to wrap around :/
-        if copy_column:
+        if segments[1].ray_count > 0 and segments[0].ray_count > 0:
             for y in range(top_down_draw_surf.get_height()):
+                #left_col_idx = max(0, segments[0].ray_count-1)
                 prev_pix = top_down_draw_surf.get_at(
                     (segments[0].ray_count-1, y), 
                 )
@@ -1616,7 +1644,6 @@ def main():
                         top_down_draw_surf.get_at((segments[0].ray_count, y))
                         #pygame.Color(255,0,0,255)
                     )
-
         offsets = [0.0, scales[0], 0.0, scales[2]]
         
         text_surf = my_font.render(
