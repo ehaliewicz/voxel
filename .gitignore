@@ -6,3 +6,5 @@ res/*
 maps/*
 maps2/*
 *.exe
+__pycache__/
+venv/
