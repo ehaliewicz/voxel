@@ -1,3 +1,4 @@
+import gc
 import typing
 
 import moderngl
@@ -11,10 +12,11 @@ import pyglet
 import numpy as np
 import numba
 
-from utils import clampf, clampi, color_to_int, skybox_col_int, skybox_col
+from utils import clampf, clampi, color_to_int, color_tuple_to_int, skybox_col_int, skybox_col
 from vectypes import float2, float3
 from camera import Camera 
 from numba_funcs import raycast_segments, transpose_and_create_bytes
+from vxl import load_voxlap_map
 # CONSTANTS
 
 
@@ -34,10 +36,10 @@ def sign(x):
     else:
         return -1
 
-OUTPUT_WIDTH = 1920
-OUTPUT_HEIGHT = 1080
-RENDER_WIDTH = OUTPUT_WIDTH//2
-RENDER_HEIGHT = OUTPUT_HEIGHT//2
+OUTPUT_WIDTH = 1280
+OUTPUT_HEIGHT = 720
+RENDER_WIDTH = OUTPUT_WIDTH
+RENDER_HEIGHT = OUTPUT_HEIGHT
 
 MAX_RAYS_LEFT_RIGHT = 2*RENDER_WIDTH + RENDER_HEIGHT
 MAX_RAYS_UP_DOWN = RENDER_WIDTH + 2*RENDER_HEIGHT
@@ -54,7 +56,7 @@ ANG_SPEED = .6/1000
 
 
 NEAR_CLIP_PLANE = .05
-FAR_CLIP_PLANE = 2048
+FAR_CLIP_PLANE = 1024
 
 # FILE IO, loading maps images, etc
 
@@ -66,14 +68,18 @@ def change_resolution(new_target_render_width, new_target_render_height):
 
 T = typing.TypeVar('T')
 def __load_transformed_img(file: str) -> typing.Generator[pygame.Color, typing.Any, typing.Any]:
-    img = pygame.image.load(f"./comanche_maps/{file}")
+    img = pygame.image.load(f"{file}")
 
     print(img.get_at((0,0)))
     w = img.get_width()
     h = img.get_height()
+    if w != 512:
+        img = pygame.transform.scale(img, (512, 512))
+        w,h = 512,512
+
     for y in range(h):
         for x in range(w):
-            yield img.get_at((y, 1023-x))
+            yield img.get_at((y, x))
 
 
 
@@ -255,24 +261,25 @@ def handle_input(camera: Camera, keys_down: set, dt: float):
     
     camera.pos = new_pos
 
-    if pygame.K_KP_7 in keys_down:
+    if pygame.K_KP_6 in keys_down:
         RENDER_MODE = 0
-    elif pygame.K_KP_8 in keys_down:
+    if pygame.K_KP_7 in keys_down:
         RENDER_MODE = 1
-    elif pygame.K_KP_9 in keys_down:
+    elif pygame.K_KP_8 in keys_down:
         RENDER_MODE = 2
+    elif pygame.K_KP_9 in keys_down:
+        RENDER_MODE = 3
     
 
 def calc_vanishing_point_world(camera: Camera):
-    rot_y = 1 * (-NEAR_CLIP_PLANE / -camera.forward.y)
+    rot_y = 1 * (-camera.near_clip / -camera.forward.y)
     return camera.pos + pyglet.math.Vec3(0, rot_y, 0)
 
 
 def project_vanishing_point_world_to_screen(camera: Camera, vp_world: pyglet.math.Vec3):
     forward = camera.forward
     right = camera.right
-    up = camera.forward.cross(right).normalize()
-    #assert vecs_close(up, camera.up)
+    up = camera.up
 
     look_matrix = pyglet.math.Mat4(
         right.x, right.y, right.z, 0,
@@ -322,16 +329,9 @@ def transform_pixel(camera: Camera, pix: pyglet.math.Vec2):
     off_pix = scaled_pix[0]-0.5, scaled_pix[1]-0.5
     homogenoeous_pix = pyglet.math.Vec4(off_pix[0]*2, off_pix[1]*2, 1, 1)
 
-
-    matrix = camera.get_projection_matrix().__invert__()
-    inverse_proj_pix = matrix @ homogenoeous_pix
-
-    inverse_scale_pix = pyglet.math.Mat4.from_scale(pyglet.math.Vec3(1,1,-1)) @ inverse_proj_pix
-
     forward = camera.forward
     right = camera.right
     up = camera.forward.cross(right)
-
 
     lookat_matrix = pyglet.math.Mat4(
         right.x, right.y, right.z, 0,
@@ -340,8 +340,11 @@ def transform_pixel(camera: Camera, pix: pyglet.math.Vec2):
         0, 0, 0, 1
     )
 
+    matrix = camera.get_projection_matrix().__invert__()
+    matrix = pyglet.math.Mat4.from_scale(pyglet.math.Vec3(1,1,-1)) @ matrix
+    matrix = lookat_matrix @ matrix
 
-    world_pix = lookat_matrix @ inverse_scale_pix
+    world_pix = matrix @ homogenoeous_pix
     unprojected_world_pix = pygame.math.Vector2(world_pix.x / world_pix.w, world_pix.z / world_pix.w)  
     return unprojected_world_pix
 
@@ -365,11 +368,10 @@ def vec2_set_axis(v: pyglet.math.Vec2, axis: int, val: float) -> pyglet.math.Vec
 def get_segment_parameters(segment_index: int, camera: Camera,
                            screen_vp: pyglet.math.Vec2, dist_to_other_end: float, 
                            neutral: pyglet.math.Vec2, primary_axis: int, world_y_max: int,
-                           screen_draw_surf: pygame.Surface):
+                           max_ray_count: int):
     secondary_axis = 1 - primary_axis
 
     segment = Segment(segment_index, (0.0,0.0), (0.0,0.0), (0.0,0.0), (0.0,0.0), 0, 0, 0)
-    max_ray_count = screen_draw_surf.get_width()
 
     # setup the end points for the 2 45 degree angle rays
     scmin = screen_vp[secondary_axis] - dist_to_other_end
@@ -507,7 +509,18 @@ class Texture:
         else:
             self.texture.use(_id)
 
-maps = [('skyline_test.png', 'skyline_test.png', True), ('C1W.png', 'D1.png', False)]
+maps = [#('skyline_test.png', 'skyline_test.png', True), 
+
+        ('./maps/de_dust2x2.vxl', None, False),
+        ('./maps/Alpine.vxl', None, False),
+        ('./maps/Arab.vxl', None, False),
+        ('./maps/AtlasNovus.vxl', None, False),
+        ('./maps/LostValley.vxl', None, False),
+        ('./maps/DragonsReach.vxl', None, False),
+        ('./maps/cloudfall.vxl', None, False),
+        ('./comanche_maps/C1W.png', './comanche_maps/D1.png', False),
+        ('./comanche_maps/C2W.png', './comanche_maps/D2.png', False),
+        ('./comanche_maps/C22W.png', './comanche_maps/D22.png', False),]
 next_map = 0
 
 def gen_height_color(height):
@@ -521,19 +534,66 @@ def gen_height_color(height):
         return pygame.Color(0x2B, 0x57, 0x70,0xFF)
         #color = color_tuple_to_int((0x1E, 0x4F, 0x20, 0xFF))
 
+spans = None
+colors = None
+columns = None
+
 def load_map():
-    global colors, heights, next_map
-    nmc, nmh,dyn_color = maps[next_map]
+    #global colors, heights, next_map
+    global spans, colors, columns, next_map
+    nmc, nmh, dyn_color = maps[next_map]
+    
     next_map += 1
+    
+
+
     if next_map >= len(maps):
         next_map = 0
-    height_pix = load_grayscale_img(nmh) #"D1.png") #"test_comanche_D.png")
-    heights = np.array([x for x in height_pix], dtype=np.uint16) 
-    if dyn_color:
-        colors = np.array([color_to_int(gen_height_color(x)) for x in heights], dtype=np.uint32)
+    
+    if colors is not None:
+        colors.fill(0)
+        spans.fill(0)
+        columns.fill(0)
     else:
-        color_pix = load_color_img(nmc) #"C1W.png") #"test_comanche_C.png")
-        colors = np.array([color_to_int(x) for x in color_pix], dtype=np.uint32)
+        colors = np.zeros((512,512,256), dtype=np.uint32)
+        spans = np.zeros((512,512,32,4), dtype=np.uint32)
+        columns = np.zeros((512,512,2), dtype=np.uint8)
+    if ".vxl" in nmc:
+        spans, colors, columns = load_voxlap_map(nmc, colors, spans, columns)
+    else:
+        #assert False
+        height_pix = load_grayscale_img(nmh) #"D1.png") #"test_comanche_D.png")
+        heights = np.array([x for x in height_pix], dtype=np.uint16)
+
+        if dyn_color:
+            raw_colors = np.array([color_to_int(gen_height_color(x)) for x in heights], dtype=np.uint32)
+        else:
+            color_pix = load_color_img(nmc) #"C1W.png") #"test_comanche_C.png")
+            raw_colors = np.array([color_to_int(x) for x in color_pix], dtype=np.uint32)
+
+        for idx in range(512*512):
+            y = idx >> 9
+            x = idx & 0b111111111
+            columns[y][x][0] = heights[idx]
+            columns[y][x][1] = 1 # 1 span
+            spans[y][x][0][0] = heights[idx]
+            spans[y][x][0][1] = 0 # ( or -1 ?? )
+            spans[y][x][0][2] = 0
+            spans[y][x][0][3] = 0
+            rgba = raw_colors[idx]
+            for yy in range(heights[idx]+1):
+                #tmp_rgba = rgba
+                #r = tmp_rgba&0xFF
+                #g = (tmp_rgba>>8)&0xFF
+                #b = (tmp_rgba>>16)&0xFF
+                #tmp_rgba = color_tuple_to_int( tweak_color_rand_table[r], tweak_color_rand_table[g], tweak_color_rand_table[b], 255)
+
+
+
+                colors[y][x][yy] = rgba
+        
+        pass
+
 
 
 
@@ -562,7 +622,7 @@ def main():
     
     last_fps = 0
     keys_down = set()
-    my_font = pygame.font.SysFont('Comic Sans MS', 20)
+    #my_font = pygame.font.SysFont('Comic Sans MS', 20)
     
     time = 0
     empty_surface = pygame.Surface((OUTPUT_WIDTH, OUTPUT_HEIGHT))
@@ -579,6 +639,7 @@ def main():
         #self.shader_data = {}
     seg01_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./seg01_frag.glsl")
     seg23_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./seg23_frag.glsl")
+    full_screen_shader = create_vertfrag_shader(gl_ctx, "./full_screen_vert.glsl", "./full_screen_frag.glsl")
         
     seg01_target_texture = Texture(pygame.Surface(TOP_DOWN_RAY_BUFFER_DIMS), gl_ctx)
     seg23_target_texture = Texture(pygame.Surface(LEFT_RIGHT_RAY_BUFFER_DIMS), gl_ctx)
@@ -587,6 +648,15 @@ def main():
     seg23_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./seg23_frag.glsl")
     ray_buffer_shader = create_vertfrag_shader(gl_ctx, "./default_vert.glsl", "./default_frag.glsl")
 
+    max_seg_width = max(MAX_RAYS_LEFT_RIGHT, MAX_RAYS_UP_DOWN)
+    max_seg_height = max(RENDER_WIDTH, RENDER_HEIGHT)
+    upload_arr = np.empty((max_seg_height*max_seg_width*3), dtype=np.uint8)
+
+    max_screen_dim = max(camera.dims)
+    total_bytes_per_column = math.ceil(max_screen_dim / 8)
+    aligned_bytes_per_column = 1 << (total_bytes_per_column.bit_length())
+    
+    full_seen_pixel_cache = np.zeros((max(MAX_RAYS_LEFT_RIGHT, MAX_RAYS_UP_DOWN), aligned_bytes_per_column), dtype=np.uint8) 
 
     while running:
             # poll for events
@@ -616,33 +686,35 @@ def main():
         ]
         
 
+        max_td_ray_count = top_down_draw_surf.get_width()
+        max_lr_ray_count = left_right_draw_surf.get_width()
         if screen_vp.y < camera.dims.y:
         #    # top segment
             segments[0] = get_segment_parameters(
                 0,
                 camera, screen_vp, camera.dims.y - screen_vp.y, 
-                pyglet.math.Vec2(0, 1), 1, WORLD_MAX_Y, top_down_draw_surf)
+                pyglet.math.Vec2(0, 1), 1, WORLD_MAX_Y, max_td_ray_count)
 
         if screen_vp.y > 0:
             # down segment
             segments[1] = get_segment_parameters(
                 1,
                 camera, screen_vp, screen_vp.y, 
-                pyglet.math.Vec2(0, -1), 1, WORLD_MAX_Y, top_down_draw_surf)
+                pyglet.math.Vec2(0, -1), 1, WORLD_MAX_Y, max_td_ray_count)
 
         if screen_vp.x < camera.dims.x:
         #    # right segment
             segments[2] = get_segment_parameters(
                 2,
                 camera, screen_vp,  camera.dims.x - screen_vp.x, 
-                pyglet.math.Vec2(1, 0), 0, WORLD_MAX_Y, left_right_draw_surf)
+                pyglet.math.Vec2(1, 0), 0, WORLD_MAX_Y, max_lr_ray_count)
 
         if screen_vp.x > 0:
         #    # left segment
             segments[3] = get_segment_parameters(
                 3,
                 camera, screen_vp, screen_vp.x, 
-                pyglet.math.Vec2(-1, 0), 0, WORLD_MAX_Y, left_right_draw_surf)
+                pyglet.math.Vec2(-1, 0), 0, WORLD_MAX_Y, max_lr_ray_count)
         
         vp_x,vp_y = screen_vp
         screen_width, screen_height = camera.dims
@@ -650,7 +722,7 @@ def main():
             segment = segments[segment_index]
             if segment_index < 2:
                 if segment_index == 0:
-                    next_free_pixel_min = clampi(round(vp_y), 0, screen_width-1)
+                    next_free_pixel_min = clampi(round(vp_y), 0, screen_height-1)
                     next_free_pixel_max = screen_height-1
                 else:
                     next_free_pixel_min = 0
@@ -681,15 +753,12 @@ def main():
         segment_cam_local_plane_ray_maxs = tuple([(s.cam_local_plane_ray_max[0], s.cam_local_plane_ray_max[1]) for s in segments])
 
         
-        max_screen_dim = max(camera.dims)
-        total_bytes_per_column = math.ceil(max_screen_dim / 8)
-        aligned_bytes_per_column = 1 << (total_bytes_per_column.bit_length())
         raycast_segments(
             segment_ray_counts, segment_next_free_pixel_mins, segment_next_free_pixel_maxs, 
             segment_cam_local_plane_ray_mins, segment_cam_local_plane_ray_maxs,
             camera.pos, camera.far_clip, world_to_screen_mat,
-            heights, colors, top_down_pix_arr, left_right_pix_arr,
-            WORLD_MAX_Y, aligned_bytes_per_column, skybox_col_int
+            spans, colors, columns, top_down_pix_arr, left_right_pix_arr,
+            WORLD_MAX_Y, full_seen_pixel_cache, aligned_bytes_per_column, skybox_col_int
         )
 
         
@@ -734,16 +803,41 @@ def main():
 
         offsets = [0.0, scales[0], 0.0, scales[2]]
         
-        text_surf = my_font.render(
-            f'fwd y: {round(camera.forward.y,3)} rays: {[seg.ray_count for seg in segments]}',
-            False, (255,255,255)
-        )
+        #text_surf = my_font.render(
+        #    f'fwd y: {round(camera.forward.y,3)} rays: {[seg.ray_count for seg in segments]}',
+        #    False, (255,255,255)
+        #)
+        if 'rayScales' in seg01_vf_shader:
+            seg01_vf_shader['rayScales'] = scales
+            seg23_vf_shader['rayScales'] = scales
+        if 'rayOffsets' in seg01_vf_shader:
+            seg01_vf_shader['rayOffsets'] = offsets
+            seg23_vf_shader['rayOffsets'] = offsets
+        try:
+            full_screen_shader['lookdown'] = camera.forward.y > 0
+        except:
+            pass
+        try:
+            full_screen_shader['rayScales'] = scales
+        except:
+            pass
+        try:
+            full_screen_shader['rayOffsets'] = offsets
+        except:
+            pass
+        try:
+            full_screen_shader['rayBuffer1'].value = 0
+        except:
+            pass
+        try:
+            full_screen_shader['rayBuffer2'].value = 1
+        except:
+            pass
+        full_screen_shader['res'] = (OUTPUT_WIDTH, OUTPUT_HEIGHT)
 
 
-        seg01_vf_shader['rayScales'] = scales
-        seg01_vf_shader['rayOffsets'] = offsets
-        seg23_vf_shader['rayScales'] = scales
-        seg23_vf_shader['rayOffsets'] = offsets
+        screen_vp2 = adjust_screen_pixel_for_mesh(screen_vp, camera.dims)
+        full_screen_shader['vp'] = (.5,.5)
 
         if RENDER_MODE == 0:
 
@@ -766,9 +860,10 @@ def main():
                 y_offset = src_height-1 - segment.next_free_pixel_max
                 
 
-                upload_arr = transpose_and_create_bytes(src_pix_arr, [x_offset, y_offset, seg_width, seg_height])
+                tmp_upload_arr = upload_arr[0:seg_height*seg_width*3] #np.empty((seg_height*seg_width*3), dtype=np.uint8)
+                transpose_and_create_bytes(src_pix_arr, tmp_upload_arr, [x_offset, y_offset, seg_width, seg_height])
 
-                dst_tex.update_from_bytes(upload_arr, [x_offset, y_offset, seg_width, seg_height])
+                dst_tex.update_from_bytes(tmp_upload_arr, [x_offset, y_offset, seg_width, seg_height])
 
                 seg_bytes = seg_height*seg_width*3
                 optimized_bytes += seg_bytes
@@ -808,9 +903,29 @@ def main():
                     (vbo, '3f 4f', 'vertexPos', 'vertexTexCoord'),
                 ])
 
+
                 texture.use()
                 vao.render()
 
+        elif RENDER_MODE == 1:
+            verts = [
+                (-1.0,1.0,.5),
+                (1.0,1.0,.5),
+                (-1.0,-1.0,.5),
+
+                (-1.0,-1.0,.5),
+                (1.0,1.0,.5),
+                (1.0,-1.0,.5)
+            ]
+            data = np.array(verts, dtype=np.float32)
+            vbo = gl_ctx.buffer(data)
+            vao = gl_ctx.vertex_array(full_screen_shader, [
+                (vbo, '3f', 'vertexPos')
+            ])
+
+            seg01_target_texture.use(0)
+            seg23_target_texture.use(1)
+            vao.render()
         else:
             pygame.surfarray.blit_array(top_down_draw_surf, top_down_pix_arr)
             pygame.surfarray.blit_array(left_right_draw_surf, left_right_pix_arr)
@@ -825,7 +940,7 @@ def main():
             vao = gl_ctx.vertex_array(ray_buffer_shader, [
                 (vbo, '2f 2f', 'vertexPos', 'vertexTexCoord'),
             ])
-            if RENDER_MODE == 1:
+            if RENDER_MODE == 2:
                 #pygame.surfarray.blit_array(top_down_draw_surf, top_down_pix_arr)
                 seg01_target_texture.update(top_down_draw_surf, vflip=True)
                 seg01_target_texture.use()
