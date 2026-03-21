@@ -47,7 +47,7 @@ def read_voxlap_column(bytes, byte_idx, spans, colors):
         bot_color_start = bot_color_end - len_top
         for i in range(bot_color_start, bot_color_end):
             factor = bytes[src_colors_idx+3]/255.0
-            col = (int(bytes[src_colors_idx+2]*factor)<<16 |
+            col = ((0xFF<<24) | int(bytes[src_colors_idx+2]*factor)<<16 |
                    int(bytes[src_colors_idx+1]*factor)<<8 |
                    int(bytes[src_colors_idx+0]*factor)) #   2,0,1,  2,1,0
                    #bytes[src_colors_idx+3])
@@ -68,7 +68,7 @@ def read_voxlap_column(bytes, byte_idx, spans, colors):
 
 
 def load_voxlap_map(f, colors_data, spans_data, columns_data):
-
+    return
     with open(f, "rb") as f:
         all_bytes = f.read(-1)
         byte_idx = 0

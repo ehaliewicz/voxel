@@ -3,7 +3,7 @@ import pyglet
 
 class Camera:
     def __init__(self, render_width, render_height, near_clip_plane, far_clip_plane):
-        self.pos = pyglet.math.Vec3(256.0, 128.0, 256.0)
+        self.pos = pyglet.math.Vec3(16.5, 4.0, 16.5)
         self.forward = pyglet.math.Vec3(0.0, -1.0, 0.0) #pyglet.math.Vec3(0, 0, 1.0)
         self.right = pyglet.math.Vec3(1.0, 0.0, 0.0)
         #self.up = pyglet.math.Vec3(0, 0, 1) 
@@ -75,6 +75,24 @@ class Camera:
                 -self.right.dot(self.pos), -self.up.dot(self.pos), self.forward.dot(self.pos), 1
             )
         return self.world_to_camera_matrix
+    
+    def get_opengl_view_proj_matrix(self):
+    
+        #r, u, f = self.right, self.up, self.forward
+        #pos = self.pos
+        #view_matrix = pyglet.math.Mat4(
+        #    r.x,  r.y,  r.z,  -r.dot(pos),
+        #    u.x,  u.y,  u.z,  -u.dot(pos),
+        #    -f.x, -f.y, -f.z,  -f.dot(pos),
+        #    0,    0,    0,     1
+        #)
+        view_matrix = pyglet.math.Mat4(
+                self.right[0], self.up[0], -self.forward[0], 0,
+                self.right[1], self.up[1], -self.forward[1], 0,
+                self.right[2], self.up[2], -self.forward[2], 0,
+                -self.right.dot(self.pos), -self.up.dot(self.pos), self.forward.dot(self.pos), 1
+            )
+        return self.get_projection_matrix() @ view_matrix
 
     def get_projection_matrix(self) -> pyglet.math.Mat4:
         if self.projection_matrix_dirty:

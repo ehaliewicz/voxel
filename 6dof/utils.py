@@ -4,11 +4,11 @@ import numba
 from vectypes import int4
 
 def color_to_int(color: pygame.Color) -> int:
-    return (color.r | (color.g<<8) | (color.b<<16)) # | (color.a<<24))
+    return (color.r | (color.g<<8) | (color.b<<16) | (color.a << 24)) # | (color.a<<24))
 
 @numba.njit
 def color_tuple_to_int(color: int4) -> int:
-    return (color[0] | (color[1]<<8) | (color[2]<<16)) # | (color.a<<24))
+    return (color[0] | (color[1]<<8) | (color[2]<<16) | (0xFF<<24)) # | (color.a<<24))
 
 
 @numba.njit
