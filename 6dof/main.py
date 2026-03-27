@@ -15,8 +15,7 @@ import numba
 from utils import clampf, clampi, color_to_int, color_tuple_to_int, skybox_col_int, skybox_col
 from vectypes import float2, float3
 from camera import Camera 
-import numba_funcs
-from numba_funcs import raycast_segments, rearrange_segments, transpose_and_create_bytes
+from numba_funcs import raycast_segments, transpose_and_create_bytes, transpose_buffers, rasterize_seg01, rasterize_seg23
 from vxl import load_voxlap_map
 # CONSTANTS
 
@@ -56,7 +55,7 @@ MOVE_SPEED = 3/1000
 ANG_SPEED = .6/1000
 
 NEAR_CLIP_PLANE = .001
-FAR_CLIP_PLANE = 128
+FAR_CLIP_PLANE = 32
 
 # FILE IO, loading maps images, etc
 
@@ -178,21 +177,17 @@ def handle_input(camera: Camera, keys_down: set, dt: float):
     elif pygame.K_x in keys_down:
         dpitch = dt * ANG_SPEED
 
+
     dyaw = 0
     dpitch = 0
     if mouse_captured:
         pygame.mouse.set_visible(False)
         rel = pygame.mouse.get_rel()
         dpitch = rel[1] * ANG_SPEED * 2 
-        dyaw = rel[0] * -ANG_SPEED * 1.25
+        dyaw = rel[0] * ANG_SPEED * 1.25
         pygame.mouse.set_pos([OUTPUT_WIDTH/2, OUTPUT_HEIGHT/2])
     else:
         pygame.mouse.set_visible(True)
-
-
-
-    
-    
 
 
     # NOTE:
@@ -201,6 +196,8 @@ def handle_input(camera: Camera, keys_down: set, dt: float):
     # our pitch would be very odd :)
 
     if dpitch != 0:
+        
+        camera.set_dirty()
         s,c = math.sin(dpitch),math.cos(dpitch)
         t = 1-c
         x,y,z = camera.right
@@ -214,9 +211,7 @@ def handle_input(camera: Camera, keys_down: set, dt: float):
         camera.forward = (rot_mat @ camera.forward).normalize()
         camera.right = (rot_mat @ camera.right).normalize()
         camera.up = (rot_mat @ camera.up).normalize()
-        #camera.set_dirty()
 
-    #dyaw = 0
     if pygame.K_LEFT in keys_down:
         dyaw = dt * ANG_SPEED
     elif pygame.K_RIGHT in keys_down:
@@ -226,37 +221,63 @@ def handle_input(camera: Camera, keys_down: set, dt: float):
     # this rotates around the world y-axis
     # if instead, we'd like to rotate around the camera's local y axis, we must do something like the above transformation
 
-    if dyaw != 0:
-        sy,cy = math.sin(dyaw),math.cos(dyaw)
+    #if dyaw != 0:
+    #    sy,cy = math.sin(dyaw),math.cos(dyaw)\
+    #    rot_mat = pyglet.math.Mat3(
+    #        cy,0,sy,
+    #        0,1,0,
+    #        -sy,0,cy
+    #    )
+    
 
+    # camera local yaw :) 
+    if dyaw != 0:
+        camera.set_dirty()
+        sy,cy = math.sin(dyaw),math.cos(dyaw)
+        t = 1-cy
+        x,y,z = camera.up
         rot_mat = pyglet.math.Mat3(
-            cy,0,sy,
-            0,1,0,
-            -sy,0,cy
+            t*x*x+cy, t*x*y + z*sy, t*x*z - y*sy,
+            t*x*y - z*sy, t*y*y + cy, t*y*z + x*sy,
+            t*x*z + y*sy, t*y*z - x*sy, t*z*z + cy
         )
+        #droll = -dyaw
+
         camera.forward = (rot_mat @ camera.forward).normalize()
         camera.right = (rot_mat @ camera.right).normalize()
         camera.up = (rot_mat @ camera.up).normalize()
-        #camera.set_dirty()
 
     # NOTE: disable ROLL for now, it's tricky and our rendering probably won't work with it yet
-    #droll = 0
-    #if pygame.K_q in keys_down:
-    #    droll = -0.3
-    #elif pygame.K_f in keys_down:
-    #    droll = .3
 
-    #if droll != 0:
-    #    sr,cr = math.sin(droll),math.cos(droll)
-    #    rot_mat = pyglet.math.Mat3(
-    #        cr, -sr, 0,
-    #        -sr, cr, 0,
-    #        0, 0, 1
-    #    )
-    #    #camera.forward = (rot_mat @ camera.forward).normalize()
-    #    camera.right = (rot_mat @ camera.right).normalize()
-    #    camera.up = (rot_mat @ camera.up).normalize()
-    #    camera.set_dirty()
+    droll = 0
+    if pygame.K_q in keys_down:
+        droll = 0.05
+    elif pygame.K_f in keys_down or pygame.K_e in keys_down:
+        droll = -0.05
+
+    if droll != 0:
+        camera.set_dirty()
+        #sr,cr = math.sin(droll),math.cos(droll)
+        
+        s,c = math.sin(droll),math.cos(droll)
+        t = 1-c
+        x,y,z = camera.right
+        #rot_mat = pyglet.math.Mat3(
+        #    cr, -sr, 0,
+        #    -sr, cr, 0,
+        #    0, 0, 1
+        #)
+        x,y,z = camera.forward
+        rot_mat = pyglet.math.Mat3(
+            t*x*x+c, t*x*y + z*s, t*x*z - y*s,
+            t*x*y - z*s, t*y*y + c, t*y*z + x*s,
+            t*x*z + y*s, t*y*z - x*s, t*z*z + c
+        )
+
+        #camera.forward = (rot_mat @ camera.forward).normalize()
+        camera.right = (rot_mat @ camera.right).normalize()
+        camera.up = (rot_mat @ camera.up).normalize()
+        #camera.set_dirty()
 
     
     if abs(camera.forward.y) < 0.001:
@@ -272,8 +293,10 @@ def handle_input(camera: Camera, keys_down: set, dt: float):
 
     # NOTE: adjusts position by camera local forward axis, not global
     if pygame.K_UP in keys_down or pygame.K_w in keys_down:
+        camera.set_dirty()
         new_pos = new_pos + camera.forward * MOVE_SPEED * dt
     elif pygame.K_DOWN in keys_down or pygame.K_s in keys_down:
+        camera.set_dirty()
         new_pos = new_pos + camera.forward * -MOVE_SPEED * dt
     
     camera.pos = new_pos
@@ -466,6 +489,7 @@ def get_segment_parameters(segment_index: int, camera: Camera,
 
 
 def adjust_screen_pixel_for_mesh(screen_pixel: float2, screen_size: float2) -> float3:
+        # converts a screen pixel from 0->dim to -1->1
         return (2* screen_pixel[0] / screen_size[0] - 1, 2 * screen_pixel[1]/screen_size[1] - 1, 0.5)
 
 def create_vertfrag_shader(ctx: moderngl.Context, vertex_filepath: str, fragment_filepath: str) -> moderngl.Program:
@@ -510,7 +534,7 @@ class Texture:
             image = pygame.transform.flip(image, False, True)
         image_width, image_height = image.get_rect().size
         #pygame.surface
-        img_data = pygame.image.tobytes(image, "ARGB")
+        img_data = pygame.image.tobytes(image, "RGBA")
         self.texture.write(img_data)
 
     def use(self, _id: typing.Union[None, int] = None) -> None:
@@ -645,8 +669,6 @@ def main():
     #my_font = pygame.font.SysFont('Comic Sans MS', 20)
     
     time = 0
-    empty_surface = pygame.Surface((OUTPUT_WIDTH, OUTPUT_HEIGHT))
-    empty_surface.fill(skybox_col)
     
     gl_ctx = moderngl.create_context()
     gl_ctx.enable(moderngl.BLEND)
@@ -659,22 +681,19 @@ def main():
     #self.shader_data = {}
     seg01_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./seg01_frag.glsl")
     seg23_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./seg23_frag.glsl")
-    all_segs_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./allsegs.glsl")
     full_screen_shader = create_vertfrag_shader(gl_ctx, "./full_screen_vert.glsl", "./full_screen_frag.glsl")
-    white_pixels_shader = create_vertfrag_shader(gl_ctx, "./tri_vert.glsl", "./white_pix.glsl")
         
-    seg01_target_texture = Texture(pygame.Surface(TOP_DOWN_RAY_BUFFER_DIMS), gl_ctx)
-    seg23_target_texture = Texture(pygame.Surface(LEFT_RIGHT_RAY_BUFFER_DIMS), gl_ctx)
-    grass_texture = Texture(grass, gl_ctx)
+    seg01_target_texture = Texture(pygame.Surface((TOP_DOWN_RAY_BUFFER_DIMS[1], TOP_DOWN_RAY_BUFFER_DIMS[0])), gl_ctx)
+    seg23_target_texture = Texture(pygame.Surface((LEFT_RIGHT_RAY_BUFFER_DIMS[1], LEFT_RIGHT_RAY_BUFFER_DIMS[0])), gl_ctx)
+    #seg01_target_texture = Texture(pygame.Surface(TOP_DOWN_RAY_BUFFER_DIMS), gl_ctx)
+    #seg23_target_texture = Texture(pygame.Surface(LEFT_RIGHT_RAY_BUFFER_DIMS), gl_ctx)
 
-    #seg01_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./seg01_frag.glsl")
-    #seg23_vf_shader = create_vertfrag_shader(gl_ctx, "./vert.glsl", "./seg23_frag.glsl")
-    
     ray_buffer_shader = create_vertfrag_shader(gl_ctx, "./default_vert.glsl", "./default_frag.glsl")
 
     max_seg_width = max(MAX_RAYS_LEFT_RIGHT, MAX_RAYS_UP_DOWN)
     max_seg_height = max(RENDER_WIDTH, RENDER_HEIGHT)
-    upload_arr = np.empty((4, max_seg_height*max_seg_width), dtype=np.uint32)
+    upload_arr = np.empty(max_seg_height*max_seg_width, dtype=np.uint32)
+
 
     max_screen_dim = max(camera.dims)
     total_bytes_per_column = math.ceil(max_screen_dim / 8)
@@ -682,8 +701,22 @@ def main():
     
     full_seen_pixel_cache = np.zeros((max(MAX_RAYS_LEFT_RIGHT, MAX_RAYS_UP_DOWN), aligned_bytes_per_column), dtype=np.uint8) 
 
-    seg01_uvs = np.array([(0, 0, 1, 0), (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 1), (1, 0, 0, 1), (0, 1, 0, 1)], dtype=np.float32)
-    seg23_uvs = np.array([(0, 0, 1, 2), (1, 0, 0, 2), (0, 1, 0, 2), (0, 0, 1, 3), (1, 0, 0, 3), (0, 1, 0, 3)], dtype=np.float32)
+    seg01_uvs = np.array([
+        (0, 0, 1, 0), 
+        (1, 0, 0, 0), 
+        (0, 1, 0, 0), 
+        (0, 0, 1, 1), 
+        (1, 0, 0, 1), 
+        (0, 1, 0, 1)
+    ], dtype=np.float32)
+    seg23_uvs = np.array([
+        (0, 0, 1, 2), 
+        (1, 0, 0, 2), 
+        (0, 1, 0, 2), 
+        (0, 0, 1, 3), 
+        (1, 0, 0, 3), 
+        (0, 1, 0, 3)
+    ], dtype=np.float32)
     
     seg01_vertices = [None for _ in range(6)]
     seg23_vertices = [None for _ in range(6)]
@@ -723,7 +756,7 @@ def main():
             elif event.type == pygame.KEYUP: 
                 if event.key == pygame.K_ESCAPE:
                     running = False
-                elif event.key == pygame.K_e:
+                elif event.key == pygame.K_l:
                     global mouse_captured
                     mouse_captured = not mouse_captured
                 if event.key in keys_down:
@@ -733,7 +766,6 @@ def main():
         last_ticks = clock.get_time()
         handle_input(camera, keys_down, last_ticks)
 
-        camera.set_dirty()
 
         local_to_screen_matrix = get_local_to_screen_matrix(camera)
         world_vp = calc_vanishing_point_world(camera)
@@ -741,8 +773,8 @@ def main():
 
         
 
-        max_td_ray_count = top_down_draw_surf.get_width()
-        max_lr_ray_count = left_right_draw_surf.get_width()
+        max_td_ray_count = MAX_RAYS_UP_DOWN #top_down_draw_surf.get_width()
+        max_lr_ray_count = MAX_RAYS_LEFT_RIGHT #eft_right_draw_surf.get_width()
         if screen_vp.y < camera.dims.y:
         #    # top segment
             segments[0] = get_segment_parameters(
@@ -822,66 +854,41 @@ def main():
             segment_cam_local_plane_ray_mins, segment_cam_local_plane_ray_maxs,
             camera.pos, camera.near_clip, camera.far_clip, 1 if camera.forward.y < 0.0 else -1, world_to_screen_mat,
             top_down_pix_arr, left_right_pix_arr,
-            WORLD_MAX_Y, full_seen_pixel_cache, skybox_col_int, wall_tex, flat_tex
+            WORLD_MAX_Y, full_seen_pixel_cache, skybox_col_int, wall_tex, flat_tex,
+            pygame.K_d in keys_down
         )
 
         
         scales = [
-            segments[0].ray_count / top_down_draw_surf.get_width(),
-            segments[1].ray_count / top_down_draw_surf.get_width(),
-            segments[2].ray_count / left_right_draw_surf.get_width(),
-            segments[3].ray_count / left_right_draw_surf.get_width(),
+            segments[0].ray_count / MAX_RAYS_UP_DOWN,
+            segments[1].ray_count / MAX_RAYS_UP_DOWN,
+            segments[2].ray_count / MAX_RAYS_LEFT_RIGHT,
+            segments[3].ray_count / MAX_RAYS_LEFT_RIGHT,
         ]
         
-        column = segments[0].ray_count+segments[1].ray_count
         
         offsets = [0.0, scales[0], 0.0, scales[2]]
 
-        if 'rayScales' in all_segs_vf_shader:
-            all_segs_vf_shader['rayScales'] = scales
+        if 'rayScales' in seg01_vf_shader:
+            #all_segs_vf_shader['rayScales'] = scales
             seg01_vf_shader['rayScales'] = scales
             seg23_vf_shader['rayScales'] = scales
-        if 'rayOffsets' in all_segs_vf_shader:
-            all_segs_vf_shader['rayOffsets'] = offsets
+        if 'rayOffsets' in seg01_vf_shader:
+            #all_segs_vf_shader['rayOffsets'] = offsets
             seg01_vf_shader['rayOffsets'] = offsets
             seg23_vf_shader['rayOffsets'] = offsets
-        try:
-            full_screen_shader['lookdown'] = camera.forward.y > 0
-        except:
-            pass
-        try:
-            full_screen_shader['rayScales'] = scales
-        except:
-            pass
-        try:
-            full_screen_shader['rayOffsets'] = offsets
-        except:
-            pass
-        try:
-            full_screen_shader['rayBuffer1'].value = 0
-        except:
-            pass
-        try:
-            full_screen_shader['rayBuffer2'].value = 1
-        except:
-            pass
-        full_screen_shader['res'] = (OUTPUT_WIDTH, OUTPUT_HEIGHT)
 
-
-        screen_vp2 = adjust_screen_pixel_for_mesh(screen_vp, camera.dims)
-        full_screen_shader['vp'] = (.5,.5)
 
         if RENDER_MODE == 0:
             optimized_bytes = 0
             mapping_table = [
-                (top_down_pix_arr, seg01_target_texture, 0),
-                (top_down_pix_arr, seg01_target_texture, segments[0].ray_count),
-                (left_right_pix_arr, seg23_target_texture,0),
-                (left_right_pix_arr, seg23_target_texture,segments[2].ray_count)
+                (top_down_pix_arr, seg01_target_texture,   0),
+                (top_down_pix_arr, seg01_target_texture,   segments[0].ray_count),
+                (left_right_pix_arr, seg23_target_texture, 0),
+                (left_right_pix_arr, seg23_target_texture, segments[2].ray_count),
             ]
 
-            #segment_data = np.array([[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]], dtype=np.uint32)
-            """
+
             for i in range(4):
                 (src_pix_arr, dst_tex, x_offset) = mapping_table[i]
                 segment = segments[i]
@@ -889,38 +896,34 @@ def main():
                 seg_height = ((segment.next_free_pixel_max+1) - segment.next_free_pixel_min)
                 seg_width = segments[i].ray_count
                 y_offset = src_height-1 - segment.next_free_pixel_max
-                
-                segment_data[i] = (x_offset, y_offset, seg_width, seg_height)
 
-                #tmp_upload_arr = upload_arr[0:seg_height*seg_width] #np.empty((seg_height*seg_width*3), dtype=np.uint8)
-                #transpose_and_create_bytes(src_pix_arr, tmp_upload_arr, [x_offset, y_offset, seg_width, seg_height])
-                #dst_tex.update_from_bytes(tmp_upload_arr, [x_offset, y_offset, seg_width, seg_height])
+                tmp_upload_arr = upload_arr[0:seg_height*seg_width] 
+                transpose_and_create_bytes(src_pix_arr, tmp_upload_arr, x_offset, y_offset, seg_width, seg_height)                
+                dst_tex.update_from_bytes(tmp_upload_arr, [y_offset, x_offset, seg_height, seg_width])
+                
+                #dst_tex.update_from_bytes(src_pix_arr2[0:seg_height*seg_width], [y_offset, x_offset, seg_height, seg_width])
+
 
                 seg_bytes = seg_height*seg_width*4
                 optimized_bytes += seg_bytes
+                continue
+                if seg_width == 0:
+                    continue
+                if i == 0 or i == 1:
+                    rasterize_seg01(src_pix_arr, upload_arr, 
+                                   (screen_vp, segments[i].max_screen, segments[i].min_screen), 
+                                   RENDER_WIDTH, RENDER_HEIGHT, 
+                                   x_offset, y_offset, seg_width, seg_height)
+                else:
+                    
+                    rasterize_seg23(src_pix_arr, upload_arr, 
+                                   (screen_vp, segments[i].max_screen, segments[i].min_screen), 
+                                   RENDER_WIDTH, RENDER_HEIGHT, 
+                                   x_offset, y_offset, seg_width, seg_height )
 
-            rearrange_segments(segment_data, upload_arr, top_down_pix_arr, left_right_pix_arr)
-            """
 
-            for i in range(4):
-                (src_pix_arr, dst_tex, x_offset) = mapping_table[i]
-                segment = segments[i]
-                src_height = len(src_pix_arr[0])
-                seg_height = ((segment.next_free_pixel_max+1) - segment.next_free_pixel_min)
-                seg_width = segments[i].ray_count
-                y_offset = src_height-1 - segment.next_free_pixel_max
 
-                #tmp_upload_arr = upload_arr[i][0:seg_height*seg_width]
-                #dst_tex.update_from_bytes(tmp_upload_arr, [x_offset, y_offset, seg_width, seg_height])
 
-                tmp_upload_arr = upload_arr[0][0:seg_height*seg_width] #np.empty((seg_height*seg_width*3), dtype=np.uint8)
-                transpose_and_create_bytes(src_pix_arr, tmp_upload_arr, [x_offset, y_offset, seg_width, seg_height])
-                dst_tex.update_from_bytes(tmp_upload_arr, [x_offset, y_offset, seg_width, seg_height])
-
-                #seg_bytes = seg_height*seg_width*4
-                #optimized_bytes += seg_bytes
-
-            
 
             seg01_vertices[0] = adjust_screen_pixel_for_mesh(screen_vp, camera.dims)
             seg01_vertices[1] = adjust_screen_pixel_for_mesh(segments[0].max_screen, camera.dims)
@@ -938,9 +941,9 @@ def main():
             seg23_vertices[4] = adjust_screen_pixel_for_mesh(segments[3].max_screen, camera.dims)
             seg23_vertices[5] = adjust_screen_pixel_for_mesh(segments[3].min_screen, camera.dims)
 
+
             
-            #gl_ctx.enable(moderngl.DEPTH_WRITE)
-            gl_ctx.screen.depth_mask = False
+            
 
             seg01_data = np.hstack([np.array(seg01_vertices, dtype=np.float32), seg01_uvs])
             seg01_buf.write(seg01_data)
@@ -951,77 +954,6 @@ def main():
             seg23_buf.write(seg23_data)
             seg23_target_texture.use()
             seg23_vao.render()
-
-
-
-            # next draw a quad
-            # create quad world space vertexes
-            x = math.floor(camera.pos.x)
-            rx = x+1
-            z = math.floor(camera.pos.z)
-            dz = z+1
-
-            has_ceil = ((x^z)&1) == 1
-            has_floor = ((x^z)&1) == 0
-
-            top_y = 30/4
-            bot_y = 2/4
-            if has_floor:
-                bot_y = 1/4
-            if has_ceil:
-                top_y = 31/4
-
-            quads_vertexes = [
-                # top quad
-                (x,top_y,dz),
-                (rx,top_y,z),
-                (x,top_y,z),
-
-                (rx,top_y,dz),
-                (rx,top_y,z),
-                (x,top_y,dz),
-
-                # bot quad
-                (x,bot_y,z),
-                (rx,bot_y,z),
-                (x,bot_y,dz),
-                
-                (x,bot_y,dz),
-                (rx,bot_y,z),
-                (rx,bot_y,dz)
-            ]
-            quads_uvs = [
-                (1,1),
-                (0,0),
-                (0,1),
-
-                (1,0),
-                (0,0),
-                (1,1),
-
-                (0,1),
-                (0,0),
-                (1,1),
-
-                (1,1),
-                (0,0),
-                (1,0)
-            ]
-
-            if pygame.K_z in keys_down:
-                gl_ctx.enable(moderngl.CULL_FACE)
-
-                data = np.hstack([np.array(quads_vertexes, dtype=np.float32), np.array(quads_uvs, dtype=np.float32)])
-
-                grass_texture.use()
-                vbo = gl_ctx.buffer(data)
-                            
-                white_pixels_shader['viewProj'] = camera.get_opengl_view_proj_matrix()
-                vao = gl_ctx.vertex_array(white_pixels_shader, [
-                    (vbo, '3f 2f', 'vertexPos', 'vertexTexCoord')
-                ])
-                vao.render()
-                gl_ctx.disable(moderngl.CULL_FACE)
 
 
         elif RENDER_MODE == 1:
@@ -1058,20 +990,20 @@ def main():
                 (vbo, '2f 2f', 'vertexPos', 'vertexTexCoord'),
             ])
             if RENDER_MODE == 2:
-                #pygame.surfarray.blit_array(top_down_draw_surf, top_down_pix_arr)
+                pygame.surfarray.blit_array(top_down_draw_surf, top_down_pix_arr)
                 seg01_target_texture.update(top_down_draw_surf, vflip=True)
                 seg01_target_texture.use()
             else:
-                #pygame.surfarray.blit_array(left_right_draw_surf, left_right_pix_arr)
+                pygame.surfarray.blit_array(left_right_draw_surf, left_right_pix_arr)
                 seg23_target_texture.update(left_right_draw_surf, vflip=True)
                 seg23_target_texture.use()
             vao.render()
         
         #display_surf.blit(text_surf, (0,0))
         pygame.display.flip()
-        #print(f"fps: {fps}")
-        print(f"cam: {camera.pos.x} {camera.pos.y} {camera.pos.z}")
-        clock.tick(60)  # limits FPS to 60
+        print(f"fps: {fps}")
+        #print(f"cam: {camera.pos.x} {camera.pos.y} {camera.pos.z}")
+        clock.tick(600)  # limits FPS to 60
 
     pygame.quit()
 

@@ -100,7 +100,7 @@ def len2(vec):
     """ Calculate the norm of a 3d vector. """
     return math.sqrt(vec[0]*vec[0] + vec[1]*vec[1])
 
-@numba.njit(forceinline=True)
+@numba.njit(forceinline=True, nogil=True, cache=True)
 def normalize(vec):
     norm_ = len2(vec)
     if norm_ < 1e-6:
@@ -115,9 +115,58 @@ def sign(x):
         return 1
     else:
         return -1
+    
+@numba.njit(fastmath=True, nogil=True, cache=True)
+def cross2(a, b):
+    return a[0] * b[1] - a[1] * b[0]
+
+@numba.njit(fastmath=True, nogil=True, cache=True)
+def clip_min(p_min, p_max, frustum):
+    frustum_inv = 1.0 / frustum
+    c0 = cross2((1.0, frustum_inv), (p_max[0], p_max[2]))
+    c1 = cross2((1.0, frustum_inv), (p_min[0], p_min[2]))
+    return 1.0 - (c0 / (c0 - c1))
+
+@numba.njit(fastmath=True, nogil=True, cache=True)
+def clip_max(p_min, p_max, frustum):
+    frustum_inv = 1.0 / frustum
+    c0 = cross2((1.0, frustum_inv), (p_max[0], p_max[2]))
+    c1 = cross2((1.0, frustum_inv), (p_min[0], p_min[2]))
+    return c1 / (c1 - c0)
+
+@numba.njit(fastmath=True, nogil=True, cache=True)
+def get_world_bounds_clipping_cam_space(p_min, p_max, frustum_bound_min, frustum_bound_max):
+    # returns (clipped: bool, min_lerp: float, max_lerp: float)
+    if p_min[0] > p_min[2] * frustum_bound_max:
+        if p_max[0] > p_max[2] * frustum_bound_max:
+            return True, 0.0, 1.0  # both above frustum
+        min_lerp = clip_min(p_min, p_max, frustum_bound_max)
+        if p_max[0] < p_max[2] * frustum_bound_min:
+            max_lerp = clip_max(p_min, p_max, frustum_bound_min)
+        else:
+            max_lerp = 1.0
+    elif p_max[0] > p_max[2] * frustum_bound_max:
+        max_lerp = clip_max(p_min, p_max, frustum_bound_max)
+        if p_min[0] < p_min[2] * frustum_bound_min:
+            min_lerp = clip_min(p_min, p_max, frustum_bound_min)
+        else:
+            min_lerp = 0.0
+    else:
+        if p_min[0] < p_min[2] * frustum_bound_min:
+            if p_max[0] < p_max[2] * frustum_bound_min:
+                return True, 0.0, 1.0  # both below frustum
+            min_lerp = clip_min(p_min, p_max, frustum_bound_min)
+            max_lerp = 1.0
+        elif p_max[0] < p_max[2] * frustum_bound_min:
+            max_lerp = clip_max(p_min, p_max, frustum_bound_min)
+            min_lerp = 0.0
+        else:
+            min_lerp = 0.0
+            max_lerp = 1.0
+    return False, min_lerp, max_lerp
 
 
-@numba.njit(forceinline=True, )
+@numba.njit(forceinline=True, nogil=True, cache=True)
 def matmult(mat: float44, vec: float4):
     x, y, z, w = vec
     # extract the elements in row-column form. (matrix is stored column first)
@@ -223,11 +272,9 @@ def fill_raybuffer_col(cam_space_top: float4, cam_space_bot: float4,
                        cur_next_free_pix_min: int, cur_next_free_pix_max: int, 
                        original_next_free_pix_min: int, original_next_free_pix_max: int,
                        seen_pixel_cache: np.ndarray[typing.Any, np.dtype[np.int8]], 
-                       pix_arr: np.ndarray[typing.Any, np.dtype[np.uint32]], col: int,
-                       texture: np.ndarray[1024, np.dtype[np.uint32]]
-                       #, color: int,
-                       #u0, v0, u1, v1,
-                       #colors, base_idx, color_v1, color_v2, num_texels
+                       pix_arr_col: np.ndarray[typing.Any, np.dtype[np.uint32]],
+                       texture: np.ndarray[1024, np.dtype[np.uint32]],
+                       use_flat_col: bool, flat_col: np.uint32
                        ) -> typing.Tuple[int, int]:
     
 
@@ -295,7 +342,6 @@ def fill_raybuffer_col(cam_space_top: float4, cam_space_bot: float4,
 
 
         # now draw visible portion of the chunk
-        pix_arr_col = pix_arr[col]
         dy = len(pix_arr_col)-1
         for y in range(ray_buffer_bounds_min, ray_buffer_bounds_max+1):
             if is_pixel_set(seen_pixel_cache, y) == 0: #seen_pixel_cache[y] == 0:
@@ -310,13 +356,11 @@ def fill_raybuffer_col(cam_space_top: float4, cam_space_bot: float4,
                 v = int(v_over_z * z * 32) & 31
 
 
-                #col = texture[u*32+v]
-                col = (0xFF<<24)|((u*6)<<16)|((v*6)<<8)
+                col = texture[u*32+v]
+                if use_flat_col:
+                    col = flat_col
 
-                
-                #r = int(u * 255)
-                #g = int(v * 255)
-                pix_arr_col[dy-y] = col #(0xFF<<24) | (r<<16) | (g << 8) #color #depth_color
+                pix_arr_col[(dy-y)] = col
                 
     return cur_next_free_pix_min, cur_next_free_pix_max
 
@@ -336,6 +380,14 @@ def make_ray(start, dir) -> tuple:
                         add2(mul2(sign_dir, neg2(frac2(start))),
                                 scale2(sign_dir,  0.5)),
                         0.5)) # * t_delta
+    
+    if (t_max[0] - t_delta[0]) > (t_max[1] - t_delta[1]):
+        # entered via X boundary
+        enter_side_flag = X_SIDE
+    else:
+        # entered via Y boundary
+        enter_side_flag = Z_SIDE
+    
 
     intersection_distances = (cmax2(sub2(t_max, t_delta)), cmin2(t_max))
     return (
@@ -344,11 +396,11 @@ def make_ray(start, dir) -> tuple:
         dir, 
         t_delta, 
         t_max, 
-        intersection_distances
-    )
+        intersection_distances,
+    ),  enter_side_flag
 
 # returns a new ray tuple, plus the remaining x and y steps
-@numba.njit(forceinline=True, )
+@numba.njit(forceinline=True, fastmath=True, nogil=True, cache=True)
 def step_ray(ray: RayTuple, ray_origin: float2, ray_dir:float2, rem_x_steps: int, rem_y_steps: int) -> tuple[RayTuple, int, int, float]:
     #(intersection_distances, t_max, t_delta, position, step) = ray
     (position, step, start, dir, t_delta, t_max, intersection_distances) = ray
@@ -385,33 +437,33 @@ FLOAT_EPS = np.finfo(np.float32).eps
 X_SIDE = 0
 Z_SIDE = 1
 
+frustum_cull = True
 
 MAP_SIZE = 32 # 512
-#@numba.njit(fastmath=True, nogil=True, cache=True)
+@numba.njit(fastmath=True, nogil=True, cache=False)
 def ray_loop(ray_origin:float2, ray_dir:float2,
              near_clip: float, far_clip: float, world_max_y: int, 
-             #spans, colors, columns,
              plane_start_bot: float3, plane_start_top: float3, plane_ray_dir: float3, 
              one_over_world_max_y: float, 
              seen_pixel_cache: np.ndarray[typing.Any, np.dtype[np.uint8]], 
-             ray_buffer: np.ndarray[typing.Any, np.dtype[np.uint32]], ray_buffer_col: int,
+             ray_buffer_col: np.ndarray[typing.Any, np.dtype[np.uint32]],
              original_next_free_pix_min: int, original_next_free_pix_max: int,
-             ray: RayTuple, 
-             camera_pos_y_normalized: float,
+             ray: RayTuple, prev_enter_side,
+             camera_pos_y: float,
              wall_tex: np.ndarray[1024, np.uint32],
              flat_tex: np.ndarray[1024, np.uint32],
-             iteration_direction: int
+             iteration_direction: int, use_flat_col: bool
 ):
     
 
-
+    camera_pos_y_normalized = camera_pos_y/world_max_y
     in_start_cell = True
     
     ((position_x, position_z), 
      _, 
-     (step_x, step_y), 
+     _,
      _, _, _, 
-     (intersection_distance, next_intersection_distance)) = ray
+     (cur_intersection_distance, next_intersection_distance)) = ray
     
     (ray_dir_x, ray_dir_z) = ray_dir
     (ray_origin_x, ray_origin_z) = ray_origin
@@ -428,67 +480,161 @@ def ray_loop(ray_origin:float2, ray_dir:float2,
 
 
     cur_next_free_pix_min, cur_next_free_pix_max = original_next_free_pix_min, original_next_free_pix_max
-    
-    start_sub_x = ray_origin_x - math.floor(ray_origin_x)
-    start_sub_z = ray_origin_z - math.floor(ray_origin_z)
-
-    if step_x == -1:
-        back_step_x = 1-start_sub_x
-    else:
-        back_step_x = start_sub_x
-    if step_y == -1:
-        back_step_z = 1-start_sub_z
-    else:
-        back_step_z = start_sub_z 
-    
-    if back_step_x < back_step_z:
-        side = X_SIDE
-    else:
-        side = X_SIDE
 
     wall_u = 0
+    side = prev_enter_side
 
-    
-    #intersection_distance = 0
+    frustum_bounds_min = original_next_free_pix_min - 0.501
+    frustum_bounds_max = original_next_free_pix_max + 0.501
 
+    frustum_dir_max_world = FLOAT_EPS
+    frustum_dir_min_world = FLOAT_EPS
     while True:
-        if(intersection_distance >= far_clip):
+        if(cur_intersection_distance >= far_clip):
             #draw_skybox(cur_next_free_pix_min, cur_next_free_pix_max, seen_pixel_cache, ray_buffer, i)
             break # no lod stuff :)
         if x_steps < 0 or y_steps < 0:
             break
 
+        
+        has_ceil = ((position_x^position_z)&1) == 1
+        has_floor = ((position_x^position_z)&1) == 0
 
-        p_nx_steps = x_steps 
-        next_ray, nx_steps, _ = step_ray(ray, ray_origin, ray_dir, x_steps, y_steps)
-        (_,_,_,_,_,_,(cur_intersection_distance,next_intersection_distance)) = ray
-        if nx_steps != p_nx_steps:
-            next_side = X_SIDE
-        else:
-            next_side = Z_SIDE
+        col_spans = [ [16,14], [2,0] ]
+        if has_floor:
+            col_spans[1][0] = 1
+        if has_ceil:
+            col_spans[0][1] = 15
 
-        plane_ray_dir_times_dist_x = scale3(plane_ray_dir, intersection_distance)
+        world_col_min = col_spans[1][1]
+        world_col_max = col_spans[0][0]
+
+
+        plane_ray_dir_times_dist_x = scale3(plane_ray_dir, cur_intersection_distance)
         cam_space_min_last = add3(plane_start_bot, plane_ray_dir_times_dist_x)
         cam_space_max_last = add3(plane_start_top, plane_ray_dir_times_dist_x)
         plane_ray_dir_times_dist_y = scale3(plane_ray_dir, next_intersection_distance)
         cam_space_min_next = add3(plane_start_bot, plane_ray_dir_times_dist_y)
         cam_space_max_next = add3(plane_start_top, plane_ray_dir_times_dist_y)
 
+        if frustum_cull:
+            world_bounds_min = 0.0
+            world_bounds_max = world_max_y
+
+            if frustum_dir_max_world != FLOAT_EPS:
+                # distance to top of frustum?
+                dist_top = next_intersection_distance if frustum_dir_max_world > 0.0 else cur_intersection_distance
+                dist_bot = cur_intersection_distance if frustum_dir_min_world < 0.0 else next_intersection_distance
+                new_max = camera_pos_y + frustum_dir_max_world * dist_top
+                new_min = camera_pos_y + frustum_dir_min_world * dist_bot
+                if new_min > world_bounds_max or new_max < world_bounds_min:
+                    return  # frustum went out of world entirely
+                if world_col_min > new_max or world_col_max < new_min:
+                    p_x_steps = x_steps 
+                    ray, x_steps, y_steps = step_ray(ray, ray_origin, ray_dir, x_steps, y_steps)
+                    ((position_x, position_z),_,_,_,_,_,(cur_intersection_distance, next_intersection_distance)) = ray
+                    if x_steps != p_x_steps:
+                        side = X_SIDE
+                    else:
+                        side = Z_SIDE
+
+                    continue  # column doesn't overlap writable world bounds
+                world_bounds_min = new_min
+                world_bounds_max = new_max
+
+            if cur_intersection_distance > 8.0 and frustum_dir_max_world == FLOAT_EPS:
+                clipped_last, clip_last_min_lerp, clip_last_max_lerp = get_world_bounds_clipping_cam_space(
+                    cam_space_min_last, cam_space_max_last, frustum_bounds_min, frustum_bounds_max)
+                clipped_next, clip_next_min_lerp, clip_next_max_lerp = get_world_bounds_clipping_cam_space(
+                    cam_space_min_next, cam_space_max_next, frustum_bounds_min, frustum_bounds_max)
+
+                if clipped_last:
+                    if clipped_next:
+                        return  # skybox
+                    else:
+                        world_bounds_min = lerp(0.0, world_max_y, clip_next_min_lerp)
+                        world_bounds_max = lerp(0.0, world_max_y, clip_next_max_lerp)
+                        frustum_dir_max_world = (world_bounds_max - camera_pos_y) / next_intersection_distance
+                        frustum_dir_min_world = (world_bounds_min - camera_pos_y) / next_intersection_distance
+                        min_clip = lerp3(cam_space_min_next, cam_space_max_next, clip_next_min_lerp)
+                        max_clip = lerp3(cam_space_min_next, cam_space_max_next, clip_next_max_lerp)
+                        cam_space_clipped_min = min_clip[0] / min_clip[2]
+                        cam_space_clipped_max = max_clip[0] / max_clip[2]
+                        if cam_space_clipped_max < cam_space_clipped_min:
+                            cam_space_clipped_min, cam_space_clipped_max = cam_space_clipped_max, cam_space_clipped_min
+                else:
+                    if clipped_next:
+                        world_bounds_min = lerp(0.0, world_max_y, clip_last_min_lerp)
+                        world_bounds_max = lerp(0.0, world_max_y, clip_last_max_lerp)
+                        frustum_dir_max_world = (world_bounds_max - camera_pos_y) / cur_intersection_distance
+                        frustum_dir_min_world = (world_bounds_min - camera_pos_y) / cur_intersection_distance
+                        min_clip = lerp3(cam_space_min_last, cam_space_max_last, clip_last_min_lerp)
+                        max_clip = lerp3(cam_space_min_last, cam_space_max_last, clip_last_max_lerp)
+                        cam_space_clipped_min = min_clip[0] / min_clip[2]
+                        cam_space_clipped_max = max_clip[0] / max_clip[2]
+                        if cam_space_clipped_max < cam_space_clipped_min:
+                            cam_space_clipped_min, cam_space_clipped_max = cam_space_clipped_max, cam_space_clipped_min
+                    else:
+                        if clip_last_min_lerp < clip_next_min_lerp:
+                            world_bounds_min = lerp(0.0, world_max_y, clip_last_min_lerp)
+                            frustum_dir_min_world = (world_bounds_min - camera_pos_y) / cur_intersection_distance
+                        else:
+                            world_bounds_min = lerp(0.0, world_max_y, clip_next_min_lerp)
+                            frustum_dir_min_world = (world_bounds_min - camera_pos_y) / next_intersection_distance
+
+                        if clip_last_max_lerp > clip_next_max_lerp:
+                            world_bounds_max = lerp(0.0, world_max_y, clip_last_max_lerp)
+                            frustum_dir_max_world = (world_bounds_max - camera_pos_y) / cur_intersection_distance
+                        else:
+                            world_bounds_max = lerp(0.0, world_max_y, clip_next_max_lerp)
+                            frustum_dir_max_world = (world_bounds_max - camera_pos_y) / next_intersection_distance
+
+                        min_clip_a = lerp3(cam_space_min_last, cam_space_max_last, clip_last_min_lerp)
+                        max_clip_a = lerp3(cam_space_min_last, cam_space_max_last, clip_last_max_lerp)
+                        min_clip_b = lerp3(cam_space_min_next, cam_space_max_next, clip_next_min_lerp)
+                        max_clip_b = lerp3(cam_space_min_next, cam_space_max_next, clip_next_max_lerp)
+
+                        min_last = min_clip_a[0] / min_clip_a[2]
+                        max_last = max_clip_a[0] / max_clip_a[2]
+                        min_next = min_clip_b[0] / min_clip_b[2]
+                        max_next = max_clip_b[0] / max_clip_b[2]
+
+                        if max_next < min_next: min_next, max_next = max_next, min_next
+                        if max_last < min_last: min_last, max_last = max_last, min_last
+
+                        cam_space_clipped_min = min(min_last, min_next)
+                        cam_space_clipped_max = max(max_last, max_next)
+
+                world_bounds_min = math.floor(world_bounds_min)
+                world_bounds_max = math.ceil(world_bounds_max)
+
+                writable_min_pixel = int(math.floor(cam_space_clipped_min))
+                writable_max_pixel = int(math.ceil(cam_space_clipped_max))
+
+                if writable_max_pixel < cur_next_free_pix_min or writable_min_pixel > cur_next_free_pix_max:
+                    return  # skybox
+
+                if writable_min_pixel > cur_next_free_pix_min:
+                    cur_next_free_pix_min = writable_min_pixel
+                    while cur_next_free_pix_min <= original_next_free_pix_max and is_pixel_set(seen_pixel_cache, cur_next_free_pix_min):
+                        cur_next_free_pix_min += 1
+                if writable_max_pixel < cur_next_free_pix_max:
+                    cur_next_free_pix_max = writable_max_pixel
+                    while cur_next_free_pix_max >= original_next_free_pix_min and is_pixel_set(seen_pixel_cache, cur_next_free_pix_max):
+                        cur_next_free_pix_max -= 1
+
+                if cur_next_free_pix_min > cur_next_free_pix_max:
+                    return  # skybox
+
+
+
         
-        hit_x = ray_origin_x + ray_dir_x*intersection_distance
-        hit_z = ray_origin_z + ray_dir_z*intersection_distance
+        hit_x = ray_origin_x + ray_dir_x*cur_intersection_distance
+        hit_z = ray_origin_z + ray_dir_z*cur_intersection_distance
         next_hit_x = ray_origin_x + ray_dir_x*next_intersection_distance
         next_hit_z = ray_origin_z + ray_dir_z*next_intersection_distance
 
         break_ray_loop = False
-        has_ceil = ((position_x^position_z)&1) == 1
-        has_floor = ((position_x^position_z)&1) == 0
-
-        col_spans = [ [32,30], [2,0] ]
-        if has_floor:
-            col_spans[1][0] = 1
-        if has_ceil:
-            col_spans[0][1] = 31
         
         top_down = iteration_direction == 1
 
@@ -505,6 +651,15 @@ def ray_loop(ray_origin:float2, ray_dir:float2,
             flat_v = default_start_v
 
 
+
+        p_x_steps = x_steps 
+        _, nx_steps, _ = step_ray(ray, ray_origin, ray_dir, x_steps, y_steps)
+        if nx_steps != p_x_steps:
+            next_side = X_SIDE
+        else:
+            next_side = Z_SIDE
+        
+
         if next_side == X_SIDE:
             exit_flat_u = default_exit_u 
             exit_flat_v = next_hit_z - math.floor(next_hit_z)
@@ -513,83 +668,34 @@ def ray_loop(ray_origin:float2, ray_dir:float2,
             exit_flat_v = default_exit_v
 
 
-        if in_start_cell:
-            if step_x == 1:
-                back_step_x_dist = ray_origin_x-math.floor(ray_origin_x)
-            else:
-                back_step_x_dist = (1+math.floor(ray_origin_x))-ray_origin_x
 
-            if step_y == 1:
-                back_step_z_dist = ray_origin_z-math.floor(ray_origin_z)
-            else:
-                back_step_z_dist = (1+math.floor(ray_origin_z))-ray_origin_z
-
-            
-            if back_step_x_dist < back_step_z_dist:
-                flat_u = default_start_u
-                #if step_x == 1:
-                #    # back_step was a x-1
-                #    flat_u = 0.0
-                #else:
-                #    flat_u = 1.0
-
-                hit_z = ray_origin_z + (cur_intersection_distance*ray_dir_z) 
-                flat_v = hit_z - math.floor(hit_z)
-            else:
-                flat_v = default_start_v
-                #if step_y == 1:
-                #    flat_v = 0.0
-                #else:
-                #    flat_v = 1.0
-
-                hit_x = ray_origin_x + (cur_intersection_distance*ray_dir_x) 
-                flat_u = hit_x - math.floor(hit_x)
-
-
-            if next_side == X_SIDE:
-                if step_x == 1:
-                    exit_flat_u = 1.0
-                else:
-                    exit_flat_u = 0.0
-                exit_flat_v = hit_z - position_z
-            elif next_side == Z_SIDE:
-                if step_y == 1:
-                    exit_flat_v = 1.0
-                else:
-                    exit_flat_v = 0.0
-                exit_flat_v = hit_x - position_x
-
-                
-            
-
-        
-        num_spans = 2
         for span_idx in range(span_idx_start, span_idx_end, iteration_direction): #span_idx in range(num_spans):
             
             #if in_start_cell:
             #    continue
-            element_bounds_max = col_spans[span_idx][0]/4
-            element_bounds_min = col_spans[span_idx][1]/4
+            element_bounds_max = col_spans[span_idx][0]
+            element_bounds_min = col_spans[span_idx][1]
 
 
             # calculate the position, between 0 and 1, in world space
             # of the top and bottom of the solid chunk of voxels for this column
             portion_top = element_bounds_max * one_over_world_max_y
-            portion_bottom = element_bounds_min * one_over_world_max_y #element_bounds_min * one_over_world_max_y
+            portion_bottom = element_bounds_min * one_over_world_max_y 
 
             # now lerp the camera space top and bottom ray positions with the portions that
             # correspond to the bottom and top of the solid voxel chunk
 
             # this gives us a camera space position for the voxel chunk
 
-            cam_space_front_bottom = lerp3(cam_space_min_last, cam_space_max_last, portion_bottom)
             cam_space_front_top = lerp3(cam_space_min_last, cam_space_max_last, portion_top)
-
-            (xb,yb,zb) = cam_space_front_bottom
             (xt,yt,zt) = cam_space_front_top
 
+            cam_space_front_bottom = lerp3(cam_space_min_last, cam_space_max_last, portion_bottom)
+            (xb,yb,zb) = cam_space_front_bottom
 
-
+            total_steps = (32-x_steps)+(32-y_steps)
+            step_shade = int((total_steps/64)*255)
+            step_color = (0xFF<<24)|(step_shade<<16)|(step_shade<<8)|(step_shade<<0)
 
 
 
@@ -609,7 +715,7 @@ def ray_loop(ray_origin:float2, ray_dir:float2,
                         cur_next_free_pix_min, cur_next_free_pix_max,
                         original_next_free_pix_min, original_next_free_pix_max,
                         seen_pixel_cache, 
-                        ray_buffer, ray_buffer_col, wall_tex
+                        ray_buffer_col, wall_tex, use_flat_col, step_color
                     )
 
 
@@ -640,7 +746,7 @@ def ray_loop(ray_origin:float2, ray_dir:float2,
                     cur_next_free_pix_min, cur_next_free_pix_max,
                     original_next_free_pix_min, original_next_free_pix_max,
                     seen_pixel_cache, 
-                    ray_buffer, ray_buffer_col, flat_tex
+                    ray_buffer_col, flat_tex, use_flat_col, step_color
                 )
                 if cur_next_free_pix_min > cur_next_free_pix_max:
                     break_ray_loop = True
@@ -652,9 +758,11 @@ def ray_loop(ray_origin:float2, ray_dir:float2,
             break
 
 
+            #print(floor_enter_transformed, floor_exit_transformed)
+
         p_x_steps = x_steps 
-        ray, x_steps, _ = step_ray(ray, ray_origin, ray_dir, x_steps, y_steps)
-        (_,_,_,_,_,_,(intersection_distance, next_intersection_distance)) = ray
+        ray, x_steps, y_steps = step_ray(ray, ray_origin, ray_dir, x_steps, y_steps)
+        ((position_x, position_z),_,_,_,_,_,(cur_intersection_distance, next_intersection_distance)) = ray
         if x_steps != p_x_steps:
             side = X_SIDE
         else:
@@ -667,7 +775,7 @@ def ray_loop(ray_origin:float2, ray_dir:float2,
 
 
 # sets up the remaining information for each ray
-#@numba.njit(parallel=False, fastmath=True, nogil=True, cache=True)
+@numba.njit(parallel=True, fastmath=True, nogil=True, cache=False)
 def execute_rays_in_segment(
     rays_in_segment: int,
     ray_buffer_base_offset: int,
@@ -685,14 +793,14 @@ def execute_rays_in_segment(
     ray_buffer: np.ndarray[(typing.Any, typing.Any), np.dtype[np.uint32]],
     world_max_y: int,
     wall_tex: np.ndarray[1024, np.uint32],
-    flat_tex: np.ndarray[1024, np.uint32],
+    flat_tex: np.ndarray[1024, np.uint32], use_flat_col: bool
 ):
     
     voxel_scale = 1
     #world_max_y = 512
 
     one_over_world_max_y = 1/world_max_y 
-    camera_pos_y_normalized = camera_position.y / world_max_y
+
 
     cam_pos_xz = (camera_position[0], camera_position[2])
     for ray_in_segment_idx in numba.prange(rays_in_segment):
@@ -702,7 +810,7 @@ def execute_rays_in_segment(
         cam_local_plane_ray_direction = lerp2(cam_local_plane_ray_min, cam_local_plane_ray_max, end_ray_lerp)
 
         norm_ray_dir = normalize(cam_local_plane_ray_direction)
-        ray = make_ray(cam_pos_xz, norm_ray_dir)
+        ray, prev_side = make_ray(cam_pos_xz, norm_ray_dir)
 
         ray_column = ray_in_segment_idx + ray_buffer_base_offset
 
@@ -722,14 +830,14 @@ def execute_rays_in_segment(
                  near_clip, far_clip, world_max_y,
                  plane_start_bottom_projected, plane_start_top_projected, plane_ray_direction_projected,
                  one_over_world_max_y,
-                 seen_pixel_col, ray_buffer, ray_column,
+                 seen_pixel_col, ray_buffer[ray_column],
                  original_next_free_pix_min, original_next_free_pix_max,
-                 ray, camera_pos_y_normalized, wall_tex, flat_tex, iteration_direction)
+                 ray, prev_side, camera_position.y, wall_tex, flat_tex, iteration_direction, use_flat_col)
     #return res
 
 
 
-#@numba.njit(fastmath=True, nogil=True, cache=True)
+@numba.njit(fastmath=True, nogil=True, cache=False)
 def raycast_segments(
     segment_ray_counts: int4,
     segment_next_free_pixel_mins: int4,
@@ -747,17 +855,18 @@ def raycast_segments(
     full_seen_pixel_cache: np.ndarray[(typing.Any, typing.Any), np.uint8],
     skybox_col_int: int,
     wall_tex: np.ndarray[(32,32), np.uint32],
-    flat_tex: np.ndarray[(32,32), np.uint32]
+    flat_tex: np.ndarray[(32,32), np.uint32], 
+    use_flat_col: bool
     ):
 
     top_down_pix_arr.fill(skybox_col_int)
     left_right_pix_arr.fill(skybox_col_int)
     
+    
     #
     total_rays = 0 #sum([s.ray_count for s in segments])
     for s in segment_ray_counts:
         total_rays += s
-
 
 
     for segment_index in range(4):
@@ -776,7 +885,7 @@ def raycast_segments(
             pix_arr = top_down_pix_arr
         else:
             pix_arr = left_right_pix_arr
-        
+
         # 0,1 are mapped to y, 2,3 are mapped to x
         axis_mapped_to_y = 0 if segment_index > 1 else 1
 
@@ -787,41 +896,151 @@ def raycast_segments(
 
         local_seen_pixel_cache = full_seen_pixel_cache[0:segment_ray_count]
         local_seen_pixel_cache.fill(0)
-        #for y in range(segment_ray_count):
-        #    full_seen_pixel_cache[y].fill(0)
 
         execute_rays_in_segment(
             segment_ray_count, segment_ray_index_offset, 
             cam_local_plane_ray_min, cam_local_plane_ray_max,
             axis_mapped_to_y, next_free_pixel_min, next_free_pixel_max,
             world_to_screen_mat, camera_pos, camera_near_clip, camera_far_clip, iteration_direction,
-            local_seen_pixel_cache, pix_arr, world_max_y, wall_tex, flat_tex)
+            local_seen_pixel_cache, pix_arr, world_max_y, wall_tex, flat_tex, use_flat_col)
 
 
-@numba.njit(parallel=True, fastmath=True, nogil=True)
-def transpose_and_create_bytes(np_arr: np.ndarray, output_arr: np.ndarray, dims):
-    x1,y1,w,h = dims
-
+@numba.njit(parallel=True, fastmath=True, nogil=True, cache=False)
+def transpose_and_create_bytes(np_arr: np.ndarray, output_arr: np.ndarray, x1,y1,w,h):
     for x in numba.prange(w):
         col = np_arr[x+x1] # get col in src array
-        for y in range(h):
-            rgba = col[y+y1] # get pixel in column
-            output_arr[(y*w+x)] = rgba # write out into rows..
-            
-            #output_arr[(y*w+x)*3+0] = rgba&0xFF
-            #output_arr[(y*w+x)*3+1] = (rgba>>8)&0xFF
-            #output_arr[(y*w+x)*3+2] = (rgba>>16)&0xFF
 
-# [seg_xoffset, seg_yoffset, seg0_height, seg0_width]
-@numba.njit(parallel=True, fastmath=True, nogil=True)
-def rearrange_segments(seg_data, big_upload_arr, seg01_src_arr, seg23_src_arr):
+        output_arr[x*h:x*h+h] = col[y1:y1+h]
+        #continue
+        #for y in range(h):
+        #    rgba = col[y+y1] # get pixel in column
+        #    #output_arr[(y*w+x)] = rgba # write out into rows..
+        #    output_arr[x*h+y] = rgba # write out into cols..
 
+
+@numba.njit(parallel=True, fastmath=True, nogil=True, cache=False)
+def transpose_buffers(np_arrs, output_arrs, dims):
     for idx in numba.prange(4):
-        if idx == 0 or idx == 1:
-            src_pix_arr = seg01_src_arr
-        else:
-            src_pix_arr = seg23_src_arr
-        (seg_xoff, seg_yoff, seg_width, seg_height) = seg_data[idx]
-        tmp_upload_arr = big_upload_arr[idx][0:seg_height*seg_width]
-        #tmp_upload_arr = upload_arr[0:seg_height*seg_width]
-        transpose_and_create_bytes(src_pix_arr, tmp_upload_arr, [seg_xoff, seg_yoff, seg_width, seg_height])
+        (x1,y1,w,h) = dims[idx]
+        transpose_and_create_bytes(np_arrs[idx], output_arrs[idx], x1,y1,w,h)
+
+@numba.njit(parallel=False, fastmath=True, nogil=True)
+def rasterize_seg01(src_pix_arr: np.ndarray, output_arr: np.ndarray, seg_verts, screen_width, screen_height, offset_x, offset_y, seg_w, seg_h):
+    # offset into the source array
+
+    min_y = seg_verts[0].y
+    max_y = seg_verts[1].y
+    vp_x = seg_verts[0].x
+
+    left_x_at_top = vp_x
+    right_x_at_top = vp_x
+    left_x_at_bot = seg_verts[2].x
+    right_x_at_bot = seg_verts[1].x
+    if min_y > max_y:
+        max_y,min_y = min_y,max_y
+        left_x_at_top,left_x_at_bot = left_x_at_bot,left_x_at_top
+        right_x_at_top,right_x_at_bot = right_x_at_bot,right_x_at_top
+
+    # we have two edges, one that goes up/down left, one that goes up/down right
+
+
+    left_dx = left_x_at_bot - left_x_at_top
+    right_dx = right_x_at_bot - right_x_at_top
+
+    dy = max_y - min_y
+    left_dx_per_y = left_dx / dy
+    right_dx_per_y = right_dx / dy
+
+    left_x = left_x_at_top
+    right_x = right_x_at_top
+
+    screen_min_y = max(math.floor(min_y), 0)
+    screen_max_y = min(math.floor(max_y)+1, screen_height)
+    #screen_min_y 
+    for y in range(screen_min_y, screen_max_y):#math.floor(min_y), math.floor(max_y)+1):
+        y_portion = (1 - ((y-min_y) / (max_y+1-min_y)))
+        #y_int = int(y_portion * 255)
+        y_coord = int(y_portion*seg_h) + offset_y
+        if y_coord < 0:
+            y_coord = 0
+        elif y_coord >= len(src_pix_arr[0]):
+            y_coord = len(src_pix_arr[0])-1
+
+        screen_min_x = max(math.floor(left_x), 0)
+        screen_max_x = min(math.floor(right_x)+1, screen_width)
+        for x in range(screen_min_x, screen_max_x):#math.floor(left_x), math.floor(right_x)+1):
+            x_portion = (x-left_x) / (right_x+1-left_x)
+            #x_int = int(x_portion * 255)
+            x_coord = int(x_portion*seg_w)+offset_x
+            if x_coord < 0:
+                x_coord = 0
+            elif x_coord >= len(src_pix_arr):
+                x_coord = len(src_pix_arr)-1
+            texel = src_pix_arr[x_coord][y_coord]
+
+            output_arr[x][y] = texel #(0xFF<<24)|(x_int<<16)|(y_int<<8)|(0<<0)
+            #output_arr[x*2+1][y*2] = texel #(0xFF<<24)|(x_int<<16)|(y_int<<8)|(0<<0)
+            #output_arr[x*2][y*2+1] = texel #(0xFF<<24)|(x_int<<16)|(y_int<<8)|(0<<0)
+            #output_arr[x*2+1][y*2+1] = texel #(0xFF<<24)|(x_int<<16)|(y_int<<8)|(0<<0)
+
+        left_x += left_dx_per_y
+        right_x += right_dx_per_y
+
+@numba.njit(parallel=False, fastmath=True, nogil=True)
+def rasterize_seg23(src_pix_arr: np.ndarray, output_arr: np.ndarray, seg_verts, screen_width, screen_height, offset_x, offset_y, seg_w, seg_h):
+    # offset into the source array
+    min_x = seg_verts[0].x
+    max_x = seg_verts[1].x
+    vp_y = seg_verts[0].y
+
+
+    top_y_at_left = vp_y
+    bot_y_at_left = vp_y
+    top_y_at_right = seg_verts[2].y
+    bot_y_at_right = seg_verts[1].y
+    if min_x > max_x:
+        max_x,min_x = min_x,max_x
+        top_y_at_left,top_y_at_right = top_y_at_right,top_y_at_left
+        bot_y_at_left,bot_y_at_right = bot_y_at_right,bot_y_at_left
+
+    # we have two edges, one that goes up/down left, one that goes up/down right
+
+
+    top_dy = top_y_at_right - top_y_at_left
+    bot_dy = bot_y_at_right - bot_y_at_left
+
+    dx = max_x - min_x
+    top_dy_per_x = top_dy / dx
+    bot_dy_per_x = bot_dy / dx
+
+    top_y = top_y_at_left
+    bot_y = bot_y_at_left
+
+    screen_min_x = max(math.floor(min_x), 0)
+    screen_max_x = min(math.floor(max_x)+1, screen_width)
+    #screen_min_y 
+    for x in range(screen_min_x, screen_max_x): #math.floor(min_x), math.floor(max_x)+1):
+        y_portion = (1 - ((x-min_x) / (max_x+1-min_x)))
+        #y_int = int(y_portion * 255)
+        y_coord = int(y_portion*seg_h) + offset_y
+        if y_coord < 0:
+            y_coord = 0
+        elif y_coord >= len(src_pix_arr[0]):
+            y_coord = len(src_pix_arr[0])-1
+
+        screen_min_y = max(math.floor(top_y), 0)
+        screen_max_y = min(math.floor(bot_y)+1, screen_height)
+        for y in range(screen_min_y, screen_max_y):#math.floor(top_y), math.floor(bot_y)+1):
+            x_portion = (y-top_y) / (bot_y+1-top_y)
+            #x_int = int(x_portion * 255)
+            x_coord = int(x_portion*seg_w)+offset_x
+            if x_coord < 0:
+                x_coord = 0
+            elif x_coord >= len(src_pix_arr):
+                x_coord = len(src_pix_arr)-1
+            texel = src_pix_arr[x_coord][y_coord]
+
+            output_arr[x][y] = texel #(0xFF<<24)|(x_int<<16)|(y_int<<8)|(0<<0)
+
+        top_y += top_dy_per_x
+        bot_y += bot_dy_per_x
