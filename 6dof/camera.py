@@ -3,14 +3,15 @@ import pyglet
 
 class Camera:
     def __init__(self, render_width, render_height, near_clip_plane, far_clip_plane):
-        self.pos = pyglet.math.Vec3(16.5, 4.0, 16.5) # y 13.8
+        self.pos = pyglet.math.Vec3(16.5, 13.8, 16.5) # y 13.8
         
         self.forward = pyglet.math.Vec3(0.0, -1.0, 0.0) #pyglet.math.Vec3(0, 0, 1.0)
         self.right = pyglet.math.Vec3(1.0, 0.0, 0.0)
 
-        #self.pos = pyglet.math.Vec3(12, 15.5, 30)
-        #self.forward = pyglet.math.Vec3(0.8039, -0.19, 0.56)
-        #self.right = pyglet.math.Vec3(0.5724, 0, -0.81)
+        self.pos = pyglet.math.Vec3(19.0, 17.199995, 7.0)
+        self.forward = pyglet.math.Vec3(0.00824, -0.6618, 0.749625)
+        self.right = pyglet.math.Vec3(0.99955, 0.0, -0.01069)
+
 
 
         #self.up = pyglet.math.Vec3(0, 0, 1) 

@@ -889,12 +889,12 @@ def main():
             ]
 
 
-            for i in range(4):
-                (src_pix_arr, dst_tex, x_offset) = mapping_table[i]
-                segment = segments[i]
+            for seg_idx in range(4):
+                (src_pix_arr, dst_tex, x_offset) = mapping_table[seg_idx]
+                segment = segments[seg_idx]
                 src_height = len(src_pix_arr[0])
                 seg_height = ((segment.next_free_pixel_max+1) - segment.next_free_pixel_min)
-                seg_width = segments[i].ray_count
+                seg_width = segments[seg_idx].ray_count
                 y_offset = src_height-1 - segment.next_free_pixel_max
 
                 tmp_upload_arr = upload_arr[0:seg_height*seg_width] 
@@ -1003,7 +1003,7 @@ def main():
         pygame.display.flip()
         print(f"fps: {fps}")
         #print(f"cam: {camera.pos.x} {camera.pos.y} {camera.pos.z}")
-        clock.tick(600)  # limits FPS to 60
+        clock.tick(60)  # limits FPS to 60
 
     pygame.quit()
 

@@ -179,7 +179,7 @@ def matmult(mat: float44, vec: float4):
     )
 
 
-@numba.njit(fastmath=True, nogil=True, cache=True)
+#@numba.njit(fastmath=True, nogil=True, cache=True)
 def setup_projected_plane_params(
         world_to_screen_mat: float44,
         ray_start: float2,
@@ -219,12 +219,12 @@ def clip_homogeneous_camera_space_line(near: float, a: float5, b: float5) -> tup
             return False, (ax,az,au,av),(bx,bz,bu,bv)
         
         v = (by-near) / (by - ay)
-        (cx,cy,cu,cv) = lerp4((bx,bz,bu,bv), (ax,az,au,av), v)
-        return True, (cx,cy,cu,cv),(bx,bz,bu,bv)
+        (cx,cz,cu,cv) = lerp4((bx,bz,bu,bv), (ax,az,au,av), v)
+        return True, (cx,cz,cu,cv),(bx,bz,bu,bv)
     elif (by < near):
         v = (ay-near) / (ay - by)
-        (cx,cy,cz,cw) = lerp4((ax,az,au,av), (bx,bz,bu,bv), v)
-        return True, (ax,az,au,av),(cx,cy,cz,cw)
+        (cx,cz,cu,cv) = lerp4((ax,az,au,av), (bx,bz,bu,bv), v)
+        return True, (ax,az,au,av),(cx,cz,cu,cv)
     else:
         return True, (ax,az,au,av),(bx,bz,bu,bv)
 
@@ -267,7 +267,7 @@ def scale_color(col: int, depth: float):
     ib = int(b*255.0)
     return (0xFF<<24)|(ir<<16)|(ig<<8)|(ib<<0)
 
-@numba.njit(fastmath=True, nogil=True, cache=True)
+#@numba.njit(fastmath=True, nogil=True, cache=True)
 def fill_raybuffer_col(cam_space_top: float4, cam_space_bot: float4,
                        cur_next_free_pix_min: int, cur_next_free_pix_max: int, 
                        original_next_free_pix_min: int, original_next_free_pix_max: int,
@@ -377,8 +377,9 @@ def make_ray(start, dir) -> tuple:
 
     t_max = mul2(t_delta, 
                    offset2(
-                        add2(mul2(sign_dir, neg2(frac2(start))),
-                                scale2(sign_dir,  0.5)),
+                        add2(
+                            mul2(sign_dir, neg2(frac2(start))),
+                            scale2(sign_dir,  0.5)),
                         0.5)) # * t_delta
     
     if (t_max[0] - t_delta[0]) > (t_max[1] - t_delta[1]):
@@ -437,10 +438,10 @@ FLOAT_EPS = np.finfo(np.float32).eps
 X_SIDE = 0
 Z_SIDE = 1
 
-frustum_cull = True
+frustum_cull = False
 
 MAP_SIZE = 32 # 512
-@numba.njit(fastmath=True, nogil=True, cache=False)
+#@numba.njit(fastmath=True, nogil=True, cache=False)
 def ray_loop(ray_origin:float2, ray_dir:float2,
              near_clip: float, far_clip: float, world_max_y: int, 
              plane_start_bot: float3, plane_start_top: float3, plane_ray_dir: float3, 
@@ -500,12 +501,11 @@ def ray_loop(ray_origin:float2, ray_dir:float2,
         has_ceil = ((position_x^position_z)&1) == 1
         has_floor = ((position_x^position_z)&1) == 0
 
-        col_spans = [ [16,14], [2,0] ]
+        col_spans = [[16,14], [2,0]]
         if has_floor:
             col_spans[1][0] = 1
         if has_ceil:
             col_spans[0][1] = 15
-
         world_col_min = col_spans[1][1]
         world_col_max = col_spans[0][0]
 
@@ -625,7 +625,6 @@ def ray_loop(ray_origin:float2, ray_dir:float2,
 
                 if cur_next_free_pix_min > cur_next_free_pix_max:
                     return  # skybox
-
 
 
         
@@ -775,7 +774,7 @@ def ray_loop(ray_origin:float2, ray_dir:float2,
 
 
 # sets up the remaining information for each ray
-@numba.njit(parallel=True, fastmath=True, nogil=True, cache=False)
+#@numba.njit(parallel=True, fastmath=True, nogil=True, cache=False)
 def execute_rays_in_segment(
     rays_in_segment: int,
     ray_buffer_base_offset: int,
@@ -837,7 +836,7 @@ def execute_rays_in_segment(
 
 
 
-@numba.njit(fastmath=True, nogil=True, cache=False)
+#@numba.njit(fastmath=True, nogil=True, cache=False)
 def raycast_segments(
     segment_ray_counts: int4,
     segment_next_free_pixel_mins: int4,
@@ -870,6 +869,8 @@ def raycast_segments(
 
 
     for segment_index in range(4):
+        if segment_index != 0:
+            continue
         #segment = segments[segment_index]
         segment_ray_count = segment_ray_counts[segment_index]
         if segment_ray_count == 0:
